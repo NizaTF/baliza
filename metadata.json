@@ -1,0 +1,6 @@
+{
+  "name": "Escondite Urbano",
+  "description": "Juego multijugador de escondite en tu ciudad. Crea una sala, configura reglas y modificadores y sincroniza el lobby en tiempo real.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
