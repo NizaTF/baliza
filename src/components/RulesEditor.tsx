@@ -1,134 +1,71 @@
 import React, { useState } from 'react';
-import { Plus, RotateCcw, Save, Trash2 } from 'lucide-react';
+import { Crown, Eye, LogOut, RotateCcw, Save, Shield } from 'lucide-react';
+import { normalizeZonesConfig } from '../lib/zones';
 import {
   DEFAULT_RULES,
-  PlayZone,
-  RoomModifiers,
+  PlayerRecord,
+  PlayerRole,
   RoomRules,
   RoundDuration,
   SeekersCount,
-  SUGGESTED_FORBIDDEN_ZONES,
+  ZonesConfig,
 } from '../types/game';
+import { PlayerAvatar } from './PlayerAvatar';
+import { ZoneMapEditor } from './ZoneMapEditor';
 
 interface RulesEditorProps {
   rules: RoomRules;
   roomCode: string;
+  players: PlayerRecord[];
+  currentPlayerId: string;
   isSaving: boolean;
   onSave: (nextRules: RoomRules) => Promise<void>;
   onCancel?: () => void;
+  onCloseRoom?: () => Promise<void>;
   submitLabel?: string;
 }
 
 const DURATIONS: RoundDuration[] = [10, 20, 30, 45, 60];
+const STORM_GRACE_OPTIONS = [15, 30, 45, 60] as const;
 const SEEKER_OPTIONS: { value: SeekersCount; label: string }[] = [
   { value: 1, label: '1' },
   { value: 2, label: '2' },
   { value: 3, label: '3' },
   { value: 'random', label: 'Aleatorio' },
 ];
-const PLAY_ZONES: { value: PlayZone; label: string }[] = [
-  { value: 'free', label: 'Libre' },
-  { value: 'radius_500m', label: 'Radio 500 m' },
-  { value: 'radius_1km', label: 'Radio 1 km' },
-  { value: 'radius_2km', label: 'Radio 2 km' },
-];
-
-interface ModifierMeta {
-  key: Exclude<keyof RoomModifiers, 'forbiddenZones'>;
-  emoji: string;
-  title: string;
-  description: string;
-}
-
-const MODIFIER_ITEMS: ModifierMeta[] = [
-  {
-    key: 'walkOnly',
-    emoji: '🏃',
-    title: 'Solo a pie',
-    description: 'Prohíbe bicis, patinetes y transporte (regla de honor).',
-  },
-  {
-    key: 'doubleAgent',
-    emoji: '🎭',
-    title: 'Modo "doble agente"',
-    description: 'Un escondido trabaja en secreto para los buscadores.',
-  },
-  {
-    key: 'mustMove',
-    emoji: '💨',
-    title: 'Cambio de escondite',
-    description: 'Los escondidos deben cambiar de zona periódicamente.',
-  },
-  {
-    key: 'noChat',
-    emoji: '🔇',
-    title: 'Sin chat',
-    description: 'Solo posición y señales visuales durante la partida.',
-  },
-  {
-    key: 'showCountdown',
-    emoji: '⏱️',
-    title: 'Cuenta atrás visible',
-    description: 'Los escondidos pueden ver el tiempo restante.',
-  },
-  {
-    key: 'nightMode',
-    emoji: '🌙',
-    title: 'Modo nocturno',
-    description: 'Restringe zonas con poca visibilidad o sin alumbrado.',
-  },
-];
 
 export const RulesEditor: React.FC<RulesEditorProps> = ({
   rules,
   roomCode,
+  players,
+  currentPlayerId,
   isSaving,
   onSave,
   onCancel,
-  submitLabel = 'Guardar e ir al lobby',
+  onCloseRoom,
+  submitLabel = 'Guardar y volver a la sala',
 }) => {
   const [draft, setDraft] = useState<RoomRules>(() => structuredClone(rules));
-  const [zoneInput, setZoneInput] = useState('');
 
-  const addForbiddenZone = (rawName: string) => {
-    const clean = rawName.trim().slice(0, 40);
-    if (!clean) return;
-    if (
-      draft.modifiers.forbiddenZones.some(
-        (z) => z.toLowerCase() === clean.toLowerCase()
-      )
-    ) {
-      setZoneInput('');
-      return;
-    }
+  const zonesConfig = normalizeZonesConfig(draft);
+  const manualRoles = draft.manualRoles || {};
+  const selectedSeekersCount = players.filter(
+    (p) => manualRoles[p.id] === 'seeker'
+  ).length;
+
+  const handleZonesChange = (nextZonesConfig: ZonesConfig) => {
     setDraft((prev) => ({
       ...prev,
-      modifiers: {
-        ...prev.modifiers,
-        forbiddenZones: [...prev.modifiers.forbiddenZones, clean],
-      },
-    }));
-    setZoneInput('');
-  };
-
-  const removeForbiddenZone = (zone: string) => {
-    setDraft((prev) => ({
-      ...prev,
-      modifiers: {
-        ...prev.modifiers,
-        forbiddenZones: prev.modifiers.forbiddenZones.filter((z) => z !== zone),
-      },
+      zonesConfig: nextZonesConfig,
     }));
   };
 
-  const toggleModifier = (
-    key: Exclude<keyof RoomModifiers, 'forbiddenZones'>
-  ) => {
+  const handleSetPlayerRole = (playerId: string, role: PlayerRole) => {
     setDraft((prev) => ({
       ...prev,
-      modifiers: {
-        ...prev.modifiers,
-        [key]: !prev.modifiers[key],
+      manualRoles: {
+        ...(prev.manualRoles || {}),
+        [playerId]: role,
       },
     }));
   };
@@ -139,20 +76,19 @@ export const RulesEditor: React.FC<RulesEditorProps> = ({
   };
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-8">
+    <form onSubmit={handleSubmit} className="space-y-6 sm:space-y-8">
       {/* Cabecera del panel */}
-      <div className="flex flex-col gap-4 border-b border-slate-200 pb-6 sm:flex-row sm:items-end sm:justify-between">
+      <div className="flex flex-col gap-4 border-b border-slate-200 pb-5 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <p className="text-sm font-medium text-emerald-700">
-            Panel del anfitrión · Sala{' '}
+            Reglas y zonas · Sala{' '}
             <span className="font-mono font-bold tracking-wider">{roomCode}</span>
           </p>
           <h1 className="font-display mt-1 text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">
-            Configura las reglas de la partida
+            Configura reglas y zonas de cierre
           </h1>
-          <p className="mt-1.5 text-sm text-slate-600">
-            Ajusta los tiempos y modificadores. Todos los jugadores en el lobby verán
-            estos cambios al instante.
+          <p className="mt-1 text-sm text-slate-600">
+            Ajusta los parámetros de partida y define en el mapa las fases estilo tormenta.
           </p>
         </div>
 
@@ -167,11 +103,11 @@ export const RulesEditor: React.FC<RulesEditorProps> = ({
       </div>
 
       {/* Grid de dos columnas en escritorio */}
-      <div className="grid grid-cols-1 gap-8 lg:grid-cols-12">
+      <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-12">
         {/* Columna izquierda: Reglas básicas */}
         <section
           aria-labelledby="basic-rules-heading"
-          className="rounded-2xl border border-slate-200 bg-white p-6 lg:col-span-5"
+          className="rounded-3xl border border-slate-200 bg-white p-5 sm:p-6 shadow-xs lg:col-span-5"
         >
           <h2
             id="basic-rules-heading"
@@ -180,14 +116,14 @@ export const RulesEditor: React.FC<RulesEditorProps> = ({
             01. Reglas básicas
           </h2>
           <p className="mt-1 text-sm text-slate-500">
-            Parámetros principales de duración, equipo y zona.
+            Duración máxima, equipo buscador y reparto de roles.
           </p>
 
           <div className="mt-6 space-y-6">
             {/* Duración de ronda */}
             <div>
               <span className="block text-sm font-semibold text-slate-900">
-                Duración de ronda
+                Duración máxima de ronda
               </span>
               <div className="mt-2 grid grid-cols-5 gap-1.5 rounded-xl bg-slate-100 p-1">
                 {DURATIONS.map((mins) => {
@@ -201,39 +137,11 @@ export const RulesEditor: React.FC<RulesEditorProps> = ({
                       }
                       className={`min-h-[44px] rounded-lg px-2 py-2 font-mono text-sm font-semibold tabular-nums transition-colors whitespace-nowrap ${
                         active
-                          ? 'bg-white text-emerald-700 shadow-sm'
+                          ? 'bg-white text-emerald-700 shadow-xs'
                           : 'text-slate-600 hover:text-slate-900'
                       }`}
                     >
                       {mins}m
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Nº de buscadores */}
-            <div>
-              <span className="block text-sm font-semibold text-slate-900">
-                Nº de buscadores
-              </span>
-              <div className="mt-2 grid grid-cols-4 gap-1.5 rounded-xl bg-slate-100 p-1">
-                {SEEKER_OPTIONS.map((opt) => {
-                  const active = draft.seekersCount === opt.value;
-                  return (
-                    <button
-                      key={String(opt.value)}
-                      type="button"
-                      onClick={() =>
-                        setDraft((prev) => ({ ...prev, seekersCount: opt.value }))
-                      }
-                      className={`min-h-[44px] rounded-lg px-2 py-2 text-sm font-semibold transition-colors whitespace-nowrap ${
-                        active
-                          ? 'bg-white text-emerald-700 shadow-sm'
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                    >
-                      {opt.label}
                     </button>
                   );
                 })}
@@ -262,7 +170,7 @@ export const RulesEditor: React.FC<RulesEditorProps> = ({
                       }
                       className={`min-h-[44px] rounded-lg px-3 py-2 text-sm font-semibold transition-colors whitespace-nowrap ${
                         active
-                          ? 'bg-white text-emerald-700 shadow-sm'
+                          ? 'bg-white text-emerald-700 shadow-xs'
                           : 'text-slate-600 hover:text-slate-900'
                       }`}
                     >
@@ -273,36 +181,125 @@ export const RulesEditor: React.FC<RulesEditorProps> = ({
               </div>
             </div>
 
-            {/* Zona de juego */}
-            <div>
-              <div className="flex items-baseline justify-between gap-2">
+            {/* Nº de buscadores (si es aleatoria) O Selector directo de jugadores (si es manual) */}
+            {draft.roleAssignment === 'random' ? (
+              <div>
                 <span className="block text-sm font-semibold text-slate-900">
-                  Zona de juego
+                  Nº de buscadores
                 </span>
-                <span className="text-xs text-slate-500">Mapa GPS en v0.3</span>
+                <div className="mt-2 grid grid-cols-4 gap-1.5 rounded-xl bg-slate-100 p-1">
+                  {SEEKER_OPTIONS.map((opt) => {
+                    const active = draft.seekersCount === opt.value;
+                    return (
+                      <button
+                        key={String(opt.value)}
+                        type="button"
+                        onClick={() =>
+                          setDraft((prev) => ({ ...prev, seekersCount: opt.value }))
+                        }
+                        className={`min-h-[44px] rounded-lg px-2 py-2 text-sm font-semibold transition-colors whitespace-nowrap ${
+                          active
+                            ? 'bg-white text-emerald-700 shadow-xs'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
-              <div className="mt-2 grid grid-cols-2 gap-1.5 rounded-xl bg-slate-100 p-1">
-                {PLAY_ZONES.map((zone) => {
-                  const active = draft.playZone === zone.value;
-                  return (
-                    <button
-                      key={zone.value}
-                      type="button"
-                      onClick={() =>
-                        setDraft((prev) => ({ ...prev, playZone: zone.value }))
-                      }
-                      className={`min-h-[44px] rounded-lg px-3 py-2 text-sm font-semibold transition-colors whitespace-nowrap ${
-                        active
-                          ? 'bg-white text-emerald-700 shadow-sm'
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                    >
-                      {zone.label}
-                    </button>
-                  );
-                })}
+            ) : (
+              <div className="space-y-2.5 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-semibold text-slate-900">
+                    Elegir buscadores ({selectedSeekersCount})
+                  </span>
+                  <span className="text-xs text-slate-500">
+                    {players.length} en sala
+                  </span>
+                </div>
+
+                {players.length === 0 ? (
+                  <p className="text-xs text-slate-500">
+                    No hay jugadores conectados todavía.
+                  </p>
+                ) : (
+                  <ul className="divide-y divide-slate-200/80">
+                    {players.map((p) => {
+                      const role: PlayerRole =
+                        manualRoles[p.id] === 'seeker' ? 'seeker' : 'hider';
+                      return (
+                        <li
+                          key={p.id}
+                          className="flex flex-wrap items-center justify-between gap-2 py-2.5 first:pt-1 last:pb-1"
+                        >
+                          <div className="flex min-w-0 items-center gap-2.5">
+                            <PlayerAvatar
+                              emoji={p.emoji}
+                              color={p.color}
+                              size="sm"
+                              name={p.name}
+                            />
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-semibold text-slate-900">
+                                {p.name}
+                              </p>
+                              <div className="flex items-center gap-1.5 text-[11px] text-slate-500">
+                                {p.is_host && (
+                                  <span className="inline-flex items-center gap-0.5 font-semibold text-amber-700">
+                                    <Crown className="h-3 w-3" aria-hidden="true" />
+                                    Anfitrión
+                                  </span>
+                                )}
+                                {p.id === currentPlayerId && (
+                                  <span className="font-medium text-emerald-700">
+                                    Tú
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="inline-flex rounded-xl bg-slate-200/80 p-0.5 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => handleSetPlayerRole(p.id, 'hider')}
+                              className={`inline-flex min-h-[36px] items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-semibold transition-colors whitespace-nowrap ${
+                                role === 'hider'
+                                  ? 'bg-white text-emerald-700 shadow-xs'
+                                  : 'text-slate-600'
+                              }`}
+                            >
+                              <Shield className="h-3.5 w-3.5" aria-hidden="true" />
+                              <span>Escondido</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleSetPlayerRole(p.id, 'seeker')}
+                              className={`inline-flex min-h-[36px] items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-semibold transition-colors whitespace-nowrap ${
+                                role === 'seeker'
+                                  ? 'bg-white text-rose-700 shadow-xs'
+                                  : 'text-slate-600'
+                              }`}
+                            >
+                              <Eye className="h-3.5 w-3.5" aria-hidden="true" />
+                              <span>Buscador</span>
+                            </button>
+                          </div>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+
+                {selectedSeekersCount === 0 && (
+                  <p className="text-xs font-medium text-amber-800">
+                    Elige al menos 1 buscador de la lista (si no eliges ninguno, se asignará automáticamente al iniciar).
+                  </p>
+                )}
               </div>
-            </div>
+            )}
 
             {/* Pistas periódicas */}
             <div className="flex items-center justify-between gap-4 border-t border-slate-100 pt-5">
@@ -333,187 +330,179 @@ export const RulesEditor: React.FC<RulesEditorProps> = ({
                 />
               </button>
             </div>
+
+            {/* Visibilidad en el mapa: Jugadores <-> Buscador */}
+            <div className="space-y-4 border-t border-slate-100 pt-5">
+              <div>
+                <p className="text-sm font-semibold text-slate-900">
+                  Visibilidad en el mapa durante la partida
+                </p>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  Elige si unos pueden ver la ubicación GPS de los otros.
+                </p>
+              </div>
+
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <p className="text-sm font-medium text-slate-900">
+                    Los jugadores ven al buscador
+                  </p>
+                  <p className="text-xs text-slate-500">
+                    Los escondidos verán la posición del buscador en el mapa.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={Boolean(draft.hidersCanSeeSeekers)}
+                  aria-label="Los jugadores ven al buscador"
+                  onClick={() =>
+                    setDraft((prev) => ({
+                      ...prev,
+                      hidersCanSeeSeekers: !prev.hidersCanSeeSeekers,
+                    }))
+                  }
+                  className={`relative inline-flex h-8 w-14 shrink-0 items-center rounded-full p-1 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700 ${
+                    draft.hidersCanSeeSeekers ? 'bg-emerald-700' : 'bg-slate-300'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-6 w-6 rounded-full bg-white shadow-sm transition-transform ${
+                      draft.hidersCanSeeSeekers ? 'translate-x-6' : 'translate-x-0'
+                    }`}
+                  />
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <p className="text-sm font-medium text-slate-900">
+                    El buscador ve a los jugadores
+                  </p>
+                  <p className="text-xs text-slate-500">
+                    El buscador verá la ubicación GPS de los escondidos.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={Boolean(draft.seekersCanSeeHiders)}
+                  aria-label="El buscador ve a los jugadores"
+                  onClick={() =>
+                    setDraft((prev) => ({
+                      ...prev,
+                      seekersCanSeeHiders: !prev.seekersCanSeeHiders,
+                    }))
+                  }
+                  className={`relative inline-flex h-8 w-14 shrink-0 items-center rounded-full p-1 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700 ${
+                    draft.seekersCanSeeHiders ? 'bg-emerald-700' : 'bg-slate-300'
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-6 w-6 rounded-full bg-white shadow-sm transition-transform ${
+                      draft.seekersCanSeeHiders ? 'translate-x-6' : 'translate-x-0'
+                    }`}
+                  />
+                </button>
+              </div>
+            </div>
+
+            {/* Castigo por tormenta */}
+            <div className="border-t border-slate-100 pt-5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="block text-sm font-semibold text-slate-900">
+                  Tiempo máximo en tormenta
+                </span>
+                <span className="font-mono text-xs font-semibold text-violet-700">
+                  {draft.stormGraceSec ?? 30} s
+                </span>
+              </div>
+              <p className="mt-0.5 text-xs text-slate-500">
+                A mitad de tiempo se revela tu posición en el mapa; al llegar a 0 s quedas eliminado por la tormenta.
+              </p>
+              <div className="mt-2 grid grid-cols-4 gap-1.5 rounded-xl bg-slate-100 p-1">
+                {STORM_GRACE_OPTIONS.map((sec) => {
+                  const active = (draft.stormGraceSec ?? 30) === sec;
+                  return (
+                    <button
+                      key={sec}
+                      type="button"
+                      onClick={() =>
+                        setDraft((prev) => ({ ...prev, stormGraceSec: sec }))
+                      }
+                      className={`min-h-[44px] rounded-lg px-2 py-2 font-mono text-sm font-semibold tabular-nums transition-colors whitespace-nowrap ${
+                        active
+                          ? 'bg-white text-violet-700 shadow-xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      {sec}s
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
           </div>
         </section>
 
-        {/* Columna derecha: Modificadores de juego y Zonas prohibidas */}
+        {/* Columna derecha: Selección y mapa de zonas estilo Fortnite */}
         <section
-          aria-labelledby="modifiers-heading"
-          className="rounded-2xl border border-slate-200 bg-white p-6 lg:col-span-7"
+          aria-labelledby="zones-config-heading"
+          className="rounded-3xl border border-slate-200 bg-white p-5 sm:p-6 shadow-xs lg:col-span-7"
         >
-          <h2
-            id="modifiers-heading"
-            className="font-display text-lg font-bold text-slate-900"
-          >
-            02. Modificadores de juego
-          </h2>
-          <p className="mt-1 text-sm text-slate-500">
-            Personaliza las reglas especiales y define los límites seguros de la ciudad.
-          </p>
-
-          {/* Lista editable de Zonas prohibidas */}
-          <div className="mt-6 border-b border-slate-200 pb-6">
-            <label
-              htmlFor="forbidden-zone-input"
-              className="block text-sm font-semibold text-slate-900"
+          <div className="mb-4 border-b border-slate-100 pb-3">
+            <h2
+              id="zones-config-heading"
+              className="font-display text-lg font-bold text-slate-900"
             >
-              🚫 Zonas prohibidas
-            </label>
-            <p className="mt-0.5 text-xs text-slate-500">
-              Sitios vetados donde ningún jugador puede esconderse ni cruzar.
-            </p>
-
-            <div className="mt-3 flex gap-2">
-              <input
-                id="forbidden-zone-input"
-                type="text"
-                maxLength={40}
-                placeholder="Ej. Parque cerrado, parking sur..."
-                value={zoneInput}
-                onChange={(e) => setZoneInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    addForbiddenZone(zoneInput);
-                  }
-                }}
-                className="min-h-[44px] flex-1 rounded-xl border border-slate-300 bg-white px-3.5 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-700/20"
-              />
-              <button
-                type="button"
-                onClick={() => addForbiddenZone(zoneInput)}
-                disabled={!zoneInput.trim()}
-                className="inline-flex min-h-[44px] items-center gap-1.5 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40 whitespace-nowrap shrink-0"
-              >
-                <Plus className="h-4 w-4" aria-hidden="true" />
-                <span>Añadir</span>
-              </button>
-            </div>
-
-            {/* Sugerencias rápidas */}
-            <div className="mt-3 flex flex-wrap gap-2">
-              {SUGGESTED_FORBIDDEN_ZONES.filter(
-                (s) =>
-                  !draft.modifiers.forbiddenZones.some(
-                    (z) => z.toLowerCase() === s.toLowerCase()
-                  )
-              ).map((suggestion) => (
-                <button
-                  key={suggestion}
-                  type="button"
-                  onClick={() => addForbiddenZone(suggestion)}
-                  className="inline-flex min-h-[36px] items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:border-slate-300 hover:bg-slate-100 whitespace-nowrap"
-                >
-                  <Plus className="h-3.5 w-3.5 text-slate-500" aria-hidden="true" />
-                  <span>{suggestion}</span>
-                </button>
-              ))}
-            </div>
-
-            {/* Lista actual de zonas prohibidas */}
-            {draft.modifiers.forbiddenZones.length > 0 ? (
-              <ul className="mt-4 divide-y divide-slate-100 rounded-xl border border-slate-200 bg-slate-50/70">
-                {draft.modifiers.forbiddenZones.map((zone) => (
-                  <li
-                    key={zone}
-                    className="flex items-center justify-between gap-3 px-3.5 py-2"
-                  >
-                    <span className="truncate text-sm font-medium text-slate-800">
-                      {zone}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => removeForbiddenZone(zone)}
-                      aria-label={`Eliminar zona prohibida ${zone}`}
-                      className="flex min-h-[40px] min-w-[40px] items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-rose-50 hover:text-rose-700"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="mt-3 text-xs text-slate-400">
-                Sin zonas vetadas por ahora (toda la zona de juego permitida).
-              </p>
-            )}
+              02. Mapa y selección de zonas
+            </h2>
           </div>
 
-          {/* Toggles de modificadores */}
-          <div className="mt-4 divide-y divide-slate-100">
-            {MODIFIER_ITEMS.map((item) => {
-              const active = draft.modifiers[item.key];
-              return (
-                <div
-                  key={item.key}
-                  className="flex items-center justify-between gap-4 py-3.5 first:pt-2 last:pb-0"
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span aria-hidden="true" className="text-base">
-                        {item.emoji}
-                      </span>
-                      <p className="text-sm font-semibold text-slate-900">
-                        {item.title}
-                      </p>
-                    </div>
-                    <p className="mt-0.5 text-xs text-slate-500">
-                      {item.description}
-                    </p>
-                  </div>
-
-                  <div className="flex items-center gap-3 shrink-0">
-                    <span
-                      className={`hidden sm:inline text-xs font-semibold ${
-                        active ? 'text-emerald-700' : 'text-slate-400'
-                      }`}
-                    >
-                      {active ? 'Activado' : 'Desactivado'}
-                    </span>
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={active}
-                      aria-label={`${item.title}: ${active ? 'Activado' : 'Desactivado'}`}
-                      onClick={() => toggleModifier(item.key)}
-                      className={`relative inline-flex h-8 w-14 shrink-0 items-center rounded-full p-1 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700 ${
-                        active ? 'bg-emerald-700' : 'bg-slate-300'
-                      }`}
-                    >
-                      <span
-                        className={`inline-block h-6 w-6 rounded-full bg-white shadow-sm transition-transform ${
-                          active ? 'translate-x-6' : 'translate-x-0'
-                        }`}
-                      />
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+          <ZoneMapEditor
+            zonesConfig={zonesConfig}
+            isHost={true}
+            onUpdateZonesConfig={handleZonesChange}
+          />
         </section>
       </div>
 
       {/* Barra de acción inferior */}
-      <div className="flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-end">
-        {onCancel && (
+      <div className="flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
+        {onCloseRoom ? (
           <button
             type="button"
-            onClick={onCancel}
+            onClick={onCloseRoom}
             disabled={isSaving}
-            className="min-h-[48px] rounded-xl border border-slate-300 bg-white px-6 py-3 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50 disabled:opacity-50 whitespace-nowrap"
+            className="inline-flex min-h-[48px] items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-semibold text-rose-700 transition-colors hover:bg-rose-50 disabled:opacity-50 whitespace-nowrap"
           >
-            Volver sin guardar
+            <LogOut className="h-4 w-4" aria-hidden="true" />
+            <span>Cerrar y borrar sala</span>
           </button>
+        ) : (
+          <div />
         )}
-        <button
-          type="submit"
-          disabled={isSaving}
-          className="inline-flex min-h-[48px] items-center justify-center gap-2 rounded-xl bg-emerald-700 px-6 py-3 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-emerald-800 disabled:opacity-60 whitespace-nowrap"
-        >
-          <Save className="h-4 w-4" aria-hidden="true" />
-          <span>{isSaving ? 'Sincronizando reglas...' : submitLabel}</span>
-        </button>
+
+        <div className="flex flex-col-reverse gap-3 sm:flex-row sm:items-center">
+          {onCancel && (
+            <button
+              type="button"
+              onClick={onCancel}
+              disabled={isSaving}
+              className="min-h-[48px] rounded-xl border border-slate-300 bg-white px-6 py-3 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50 disabled:opacity-50 whitespace-nowrap"
+            >
+              Ir a la sala
+            </button>
+          )}
+          <button
+            type="submit"
+            disabled={isSaving}
+            className="inline-flex min-h-[48px] items-center justify-center gap-2 rounded-xl bg-emerald-700 px-6 py-3 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-emerald-800 disabled:opacity-60 whitespace-nowrap"
+          >
+            <Save className="h-4 w-4" aria-hidden="true" />
+            <span>{isSaving ? 'Guardando...' : submitLabel}</span>
+          </button>
+        </div>
       </div>
     </form>
   );

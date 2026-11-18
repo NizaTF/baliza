@@ -1,12 +1,17 @@
 import {
   DEFAULT_RULES,
+  PlayerLocationPayload,
   PlayerProfile,
   PlayerRecord,
   RoomRecord,
   RoomRules,
 } from '../types/game';
 import { generateRoomCode, generateUuid, getPlayerId } from './storage';
-import { isSupabaseConfigured, supabase } from './supabaseClient';
+import {
+  isSupabaseConfigured,
+  supabase,
+  supabaseCredentials,
+} from './supabaseClient';
 
 const LOCAL_ROOMS_KEY = 'escondite_urbano_local_rooms_v1';
 const CHANNEL_NAME = 'escondite_urbano_sync_v1';
@@ -92,6 +97,16 @@ export async function createRoom(
 
       if (roomError) {
         if (roomError.code === '23505') continue; // Código duplicado, reintentar
+        if (roomError.code === '42P01' || roomError.code === 'PGRST205') {
+          throw new Error(
+            'Faltan las tablas en Supabase. Ejecuta supabase/schema.sql en el SQL Editor de tu proyecto.'
+          );
+        }
+        if (/invalid path/i.test(roomError.message)) {
+          throw new Error(
+            'La URL de Supabase (VITE_SUPABASE_URL) contiene una ruta inválida. Debe ser solo https://<tu-id>.supabase.co (sin rutas extra).'
+          );
+        }
         throw new Error(roomError.message);
       }
 
@@ -179,13 +194,41 @@ export async function joinRoom(
       .eq('status', 'lobby')
       .maybeSingle();
 
-    if (roomError || !roomData) {
+    if (roomError) {
+      if (roomError.code === '42P01' || roomError.code === 'PGRST205') {
+        throw new Error(
+          'Faltan las tablas en Supabase. Ejecuta supabase/schema.sql en el SQL Editor de tu proyecto.'
+        );
+      }
+      throw new Error('Error al consultar la sala en Supabase. Inténtalo de nuevo.');
+    }
+
+    if (!roomData) {
       throw new Error('No encontramos esa sala. Revisa el código.');
     }
 
     const room = roomData as RoomRecord;
     const isHost = room.host_id === playerId;
     const now = new Date().toISOString();
+
+    const { data: existingPlayers } = await supabase
+      .from('players')
+      .select('*')
+      .eq('room_id', room.id)
+      .order('joined_at', { ascending: true });
+
+    const currentList = (existingPlayers as PlayerRecord[]) || [];
+    const alreadyInRoom = currentList.some((p) => p.id === playerId);
+
+    if (room.rules?.matchState?.active && !alreadyInRoom) {
+      throw new Error('La partida ya ha comenzado.');
+    }
+    if (room.rules?.roomLocked && !alreadyInRoom && !isHost) {
+      throw new Error('El anfitrión ha cerrado la entrada a nuevos jugadores.');
+    }
+    if (!alreadyInRoom && currentList.length >= 30) {
+      throw new Error('La sala está llena (máximo 30 jugadores).');
+    }
 
     const { data: playerData, error: playerError } = await supabase
       .from('players')
@@ -233,6 +276,17 @@ export async function joinRoom(
 
   const roomPlayers = store.players[room.id] || [];
   const existingIdx = roomPlayers.findIndex((p) => p.id === playerId);
+
+  if (room.rules?.matchState?.active && existingIdx < 0) {
+    throw new Error('La partida ya ha comenzado.');
+  }
+  if (room.rules?.roomLocked && existingIdx < 0 && room.host_id !== playerId) {
+    throw new Error('El anfitrión ha cerrado la entrada a nuevos jugadores.');
+  }
+  if (existingIdx < 0 && roomPlayers.length >= 30) {
+    throw new Error('La sala está llena (máximo 30 jugadores).');
+  }
+
   const player: PlayerRecord = {
     id: playerId,
     room_id: room.id,
@@ -360,6 +414,67 @@ export async function updatePlayerProfileInRoom(
   }
 }
 
+export async function kickPlayer(
+  roomId: string,
+  targetPlayerId: string
+): Promise<void> {
+  if (isSupabaseConfigured && supabase) {
+    const { error } = await supabase
+      .from('players')
+      .delete()
+      .eq('id', targetPlayerId)
+      .eq('room_id', roomId);
+    if (error) throw new Error(error.message);
+    return;
+  }
+
+  const store = readLocalStore();
+  store.players[roomId] = (store.players[roomId] || []).filter(
+    (p) => p.id !== targetPlayerId
+  );
+  writeLocalStore(store);
+  broadcastLocalSync({ type: 'room_updated', roomId });
+}
+
+export async function transferHost(
+  roomId: string,
+  currentHostId: string,
+  nextHostId: string
+): Promise<void> {
+  if (isSupabaseConfigured && supabase) {
+    const { error: roomErr } = await supabase
+      .from('rooms')
+      .update({ host_id: nextHostId })
+      .eq('id', roomId);
+    if (roomErr) throw new Error(roomErr.message);
+
+    await supabase
+      .from('players')
+      .update({ is_host: false })
+      .eq('id', currentHostId)
+      .eq('room_id', roomId);
+
+    const { error: nextErr } = await supabase
+      .from('players')
+      .update({ is_host: true })
+      .eq('id', nextHostId)
+      .eq('room_id', roomId);
+    if (nextErr) throw new Error(nextErr.message);
+    return;
+  }
+
+  const store = readLocalStore();
+  const room = store.rooms[roomId];
+  if (!room) throw new Error('Sala no encontrada.');
+  store.rooms[roomId] = { ...room, host_id: nextHostId };
+  store.players[roomId] = (store.players[roomId] || []).map((p) => ({
+    ...p,
+    is_host: p.id === nextHostId,
+  }));
+  writeLocalStore(store);
+  broadcastLocalSync({ type: 'room_updated', roomId });
+}
+
 export async function leaveRoom(
   roomId: string,
   playerId: string,
@@ -370,6 +485,47 @@ export async function leaveRoom(
       await supabase.from('rooms').delete().eq('id', roomId);
     } else {
       await supabase.from('players').delete().eq('id', playerId).eq('room_id', roomId);
+    }
+    return;
+  }
+
+  const store = readLocalStore();
+  if (isHost) {
+    delete store.rooms[roomId];
+    delete store.players[roomId];
+    writeLocalStore(store);
+    broadcastLocalSync({ type: 'room_deleted', roomId });
+  } else {
+    store.players[roomId] = (store.players[roomId] || []).filter(
+      (p) => p.id !== playerId
+    );
+    writeLocalStore(store);
+    broadcastLocalSync({ type: 'room_updated', roomId });
+  }
+}
+
+export function leaveRoomOnUnload(
+  roomId: string,
+  playerId: string,
+  isHost: boolean
+): void {
+  if (isSupabaseConfigured && supabaseCredentials) {
+    const { url, anonKey } = supabaseCredentials;
+    const endpoint = isHost
+      ? `${url}/rest/v1/rooms?id=eq.${encodeURIComponent(roomId)}`
+      : `${url}/rest/v1/players?id=eq.${encodeURIComponent(playerId)}&room_id=eq.${encodeURIComponent(roomId)}`;
+
+    try {
+      void fetch(endpoint, {
+        method: 'DELETE',
+        headers: {
+          apikey: anonKey,
+          Authorization: `Bearer ${anonKey}`,
+        },
+        keepalive: true,
+      });
+    } catch {
+      // Ignore network errors during page unload
     }
     return;
   }
@@ -482,5 +638,66 @@ export function subscribeToRoom(
     if (channel) {
       channel.close();
     }
+  };
+}
+
+export function subscribeToMatchLocations(
+  roomId: string,
+  onLocation: (payload: PlayerLocationPayload) => void
+): {
+  sendLocation: (payload: PlayerLocationPayload) => void;
+  unsubscribe: () => void;
+} {
+  if (isSupabaseConfigured && supabase) {
+    const client = supabase;
+    let isSubscribed = false;
+    const channel = client.channel(`room-loc-${roomId}`, {
+      config: { broadcast: { self: false } },
+    });
+
+    channel
+      .on('broadcast', { event: 'player_location' }, (msg) => {
+        const data = msg.payload as PlayerLocationPayload | undefined;
+        if (data && typeof data.playerId === 'string') {
+          onLocation(data);
+        }
+      })
+      .subscribe((status) => {
+        isSubscribed = status === 'SUBSCRIBED';
+      });
+
+    return {
+      sendLocation: (payload) => {
+        if (!isSubscribed) return;
+        void channel.send({
+          type: 'broadcast',
+          event: 'player_location',
+          payload,
+        });
+      },
+      unsubscribe: () => {
+        void client.removeChannel(channel);
+      },
+    };
+  }
+
+  // Modo sincronización local entre pestañas
+  let localChannel: BroadcastChannel | null = null;
+  if (typeof BroadcastChannel !== 'undefined') {
+    localChannel = new BroadcastChannel(`baliza-loc-${roomId}`);
+    localChannel.onmessage = (event: MessageEvent<PlayerLocationPayload>) => {
+      if (event.data && typeof event.data.playerId === 'string') {
+        onLocation(event.data);
+      }
+    };
+  }
+
+  return {
+    sendLocation: (payload) => {
+      localChannel?.postMessage(payload);
+    },
+    unsubscribe: () => {
+      localChannel?.close();
+    },
   };
 }

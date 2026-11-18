@@ -3,9 +3,17 @@ import { ACCENT_COLORS, EMOJI_PALETTE, PlayerProfile } from '../types/game';
 const PROFILE_STORAGE_KEY = 'escondite_urbano_profile';
 const PLAYER_ID_STORAGE_KEY = 'escondite_urbano_player_id';
 const ACTIVE_SESSION_STORAGE_KEY = 'escondite_urbano_active_session';
+const TAB_HEARTBEAT_KEY = 'baliza_tab_heartbeat_v1';
+const HEARTBEAT_TTL_MS = 30000;
 
 // Alfabeto sin caracteres ambiguos (sin O, 0, I, 1)
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+
+interface TabHeartbeat {
+  playerId: string;
+  ts: number;
+  active: boolean;
+}
 
 export function generateUuid(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -18,12 +26,111 @@ export function generateUuid(): string {
   });
 }
 
+function readHeartbeat(): TabHeartbeat | null {
+  try {
+    const raw = localStorage.getItem(TAB_HEARTBEAT_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<TabHeartbeat>;
+    if (
+      typeof parsed.playerId === 'string' &&
+      typeof parsed.ts === 'number' &&
+      typeof parsed.active === 'boolean'
+    ) {
+      return {
+        playerId: parsed.playerId,
+        ts: parsed.ts,
+        active: parsed.active,
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function isAnotherTabActivelyHoldingSession(candidatePlayerId: string): boolean {
+  const hb = readHeartbeat();
+  if (!hb) return false;
+  return (
+    hb.playerId === candidatePlayerId &&
+    hb.active &&
+    Date.now() - hb.ts <= HEARTBEAT_TTL_MS
+  );
+}
+
+export function touchSessionHeartbeat(playerId: string): void {
+  try {
+    const payload: TabHeartbeat = {
+      playerId,
+      ts: Date.now(),
+      active: true,
+    };
+    localStorage.setItem(TAB_HEARTBEAT_KEY, JSON.stringify(payload));
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+export function markTabInactive(playerId: string): void {
+  try {
+    const hb = readHeartbeat();
+    if (hb && hb.playerId !== playerId) return;
+    const payload: TabHeartbeat = {
+      playerId,
+      ts: Date.now(),
+      active: false,
+    };
+    localStorage.setItem(TAB_HEARTBEAT_KEY, JSON.stringify(payload));
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+function isForceNewTabRequested(): boolean {
+  try {
+    if (typeof window === 'undefined') return false;
+    const params = new URLSearchParams(window.location.search);
+    return params.get('nuevo') === '1';
+  } catch {
+    return false;
+  }
+}
+
 export function getPlayerId(): string {
   try {
-    const existing = sessionStorage.getItem(PLAYER_ID_STORAGE_KEY);
-    if (existing) return existing;
+    const sessionExisting = sessionStorage.getItem(PLAYER_ID_STORAGE_KEY);
+    if (sessionExisting) return sessionExisting;
+
+    const forceNew = isForceNewTabRequested();
+
+    // Si se cerró la app/PWA y se vuelve a abrir, recuperar el último jugador de la sesión persistente
+    const localSession = parseActiveSessionRaw(
+      localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY)
+    );
+    if (
+      !forceNew &&
+      localSession &&
+      !isAnotherTabActivelyHoldingSession(localSession.playerId)
+    ) {
+      sessionStorage.setItem(PLAYER_ID_STORAGE_KEY, localSession.playerId);
+      return localSession.playerId;
+    }
+
+    const localPlayerId = localStorage.getItem(PLAYER_ID_STORAGE_KEY);
+    if (
+      !forceNew &&
+      localPlayerId &&
+      !isAnotherTabActivelyHoldingSession(localPlayerId)
+    ) {
+      sessionStorage.setItem(PLAYER_ID_STORAGE_KEY, localPlayerId);
+      return localPlayerId;
+    }
+
     const next = generateUuid();
     sessionStorage.setItem(PLAYER_ID_STORAGE_KEY, next);
+    if (!localPlayerId) {
+      localStorage.setItem(PLAYER_ID_STORAGE_KEY, next);
+    }
     return next;
   } catch {
     return generateUuid();
@@ -81,10 +188,9 @@ export interface ActiveSession {
   playerId: string;
 }
 
-export function loadActiveSession(): ActiveSession | null {
+function parseActiveSessionRaw(raw: string | null): ActiveSession | null {
+  if (!raw) return null;
   try {
-    const raw = sessionStorage.getItem(ACTIVE_SESSION_STORAGE_KEY);
-    if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<ActiveSession>;
     if (parsed.roomId && parsed.roomCode && parsed.playerId) {
       return {
@@ -99,12 +205,47 @@ export function loadActiveSession(): ActiveSession | null {
   }
 }
 
+export function loadActiveSession(): ActiveSession | null {
+  try {
+    const fromSession = parseActiveSessionRaw(
+      sessionStorage.getItem(ACTIVE_SESSION_STORAGE_KEY)
+    );
+    if (fromSession) return fromSession;
+
+    const fromLocal = parseActiveSessionRaw(
+      localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY)
+    );
+    if (
+      !isForceNewTabRequested() &&
+      fromLocal &&
+      !isAnotherTabActivelyHoldingSession(fromLocal.playerId)
+    ) {
+      sessionStorage.setItem(
+        ACTIVE_SESSION_STORAGE_KEY,
+        JSON.stringify(fromLocal)
+      );
+      sessionStorage.setItem(PLAYER_ID_STORAGE_KEY, fromLocal.playerId);
+      return fromLocal;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export function saveActiveSession(session: ActiveSession | null): void {
   try {
     if (!session) {
       sessionStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
+      localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
+      localStorage.removeItem(TAB_HEARTBEAT_KEY);
     } else {
-      sessionStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, JSON.stringify(session));
+      const serialized = JSON.stringify(session);
+      sessionStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, serialized);
+      sessionStorage.setItem(PLAYER_ID_STORAGE_KEY, session.playerId);
+      localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, serialized);
+      localStorage.setItem(PLAYER_ID_STORAGE_KEY, session.playerId);
+      touchSessionHeartbeat(session.playerId);
     }
   } catch {
     // Ignore storage errors

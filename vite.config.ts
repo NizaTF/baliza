@@ -5,8 +5,24 @@ import path from 'path';
 import {defineConfig} from 'vite';
 import {VitePWA} from 'vite-plugin-pwa';
 
-export default defineConfig(() => {
-  const base = process.env.VITE_BASE_PATH || '/';
+function normalizeBasePath(raw?: string): string {
+  if (!raw || !raw.trim()) return '/';
+  let pathname = raw.trim();
+  if (/^https?:\/\//i.test(pathname)) {
+    try {
+      pathname = new URL(pathname).pathname;
+    } catch {
+      pathname = '/';
+    }
+  }
+  if (!pathname.startsWith('/')) pathname = `/${pathname}`;
+  if (!pathname.endsWith('/')) pathname = `${pathname}/`;
+  return pathname;
+}
+
+export default defineConfig(({command}) => {
+  const base =
+    command === 'serve' ? '/' : normalizeBasePath(process.env.VITE_BASE_PATH);
 
   return {
     base,
@@ -18,10 +34,11 @@ export default defineConfig(() => {
         includeAssets: ['icon.svg', 'apple-touch-icon.png'],
         manifest: {
           id: base,
-          name: 'Escondite Urbano',
-          short_name: 'Escondite',
+          name: 'Baliza',
+          short_name: 'Baliza',
+          lang: 'es',
           description:
-            'Juego multijugador de escondite en tu ciudad. Crea una sala, configura reglas y sincroniza el lobby en tiempo real.',
+            'Juego multijugador urbano con zonas de cierre en mapa y sincronización en tiempo real.',
           theme_color: '#059669',
           background_color: '#f8fafc',
           display: 'standalone',
