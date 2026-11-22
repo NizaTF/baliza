@@ -1,16 +1,19 @@
-import React, { useState } from 'react';
-import { Crown, Eye, LogOut, RotateCcw, Save, Shield } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import { Crown, Eye, Save, Shield } from 'lucide-react';
+import {
+  applyRecommendedToRules,
+  getRecommendedSettings,
+} from '../lib/recommendations';
 import { normalizeZonesConfig } from '../lib/zones';
 import {
   DEFAULT_RULES,
   PlayerRecord,
   PlayerRole,
   RoomRules,
-  RoundDuration,
-  SeekersCount,
   ZonesConfig,
 } from '../types/game';
 import { PlayerAvatar } from './PlayerAvatar';
+import { UnboundedNumberField } from './UnboundedNumberField';
 import { ZoneMapEditor } from './ZoneMapEditor';
 
 interface RulesEditorProps {
@@ -25,14 +28,36 @@ interface RulesEditorProps {
   submitLabel?: string;
 }
 
-const DURATIONS: RoundDuration[] = [10, 20, 30, 45, 60];
-const STORM_GRACE_OPTIONS = [15, 30, 45, 60] as const;
-const SEEKER_OPTIONS: { value: SeekersCount; label: string }[] = [
-  { value: 1, label: '1' },
-  { value: 2, label: '2' },
-  { value: 3, label: '3' },
-  { value: 'random', label: 'Aleatorio' },
-];
+type StudioTab = 'general' | 'zones' | 'modes';
+
+interface CleanSwitchProps {
+  checked: boolean;
+  onToggle: () => void;
+  ariaLabel: string;
+}
+
+const CleanSwitch: React.FC<CleanSwitchProps> = ({
+  checked,
+  onToggle,
+  ariaLabel,
+}) => (
+  <button
+    type="button"
+    role="switch"
+    aria-checked={checked}
+    aria-label={ariaLabel}
+    onClick={onToggle}
+    className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full p-0.5 transition-colors ${
+      checked ? 'bg-emerald-600' : 'bg-slate-200'
+    }`}
+  >
+    <span
+      className={`inline-block h-5 w-5 rounded-full bg-white shadow-xs transition-transform ${
+        checked ? 'translate-x-5' : 'translate-x-0'
+      }`}
+    />
+  </button>
+);
 
 export const RulesEditor: React.FC<RulesEditorProps> = ({
   rules,
@@ -43,15 +68,39 @@ export const RulesEditor: React.FC<RulesEditorProps> = ({
   onSave,
   onCancel,
   onCloseRoom,
-  submitLabel = 'Guardar y volver a la sala',
+  submitLabel = 'Guardar cambios',
 }) => {
   const [draft, setDraft] = useState<RoomRules>(() => structuredClone(rules));
+  const [activeTab, setActiveTab] = useState<StudioTab>('general');
 
   const zonesConfig = normalizeZonesConfig(draft);
   const manualRoles = draft.manualRoles || {};
   const selectedSeekersCount = players.filter(
     (p) => manualRoles[p.id] === 'seeker'
   ).length;
+
+  const rec = useMemo(
+    () => getRecommendedSettings(players.length),
+    [players.length]
+  );
+
+  const activeModesCount = useMemo(() => {
+    const m = draft.modifiers;
+    let count = 0;
+    if (m.classicModeEnabled) count++;
+    if (draft.timeVictoryEnabled ?? true) count++;
+    if (draft.beaconVictoryEnabled ?? true) count++;
+    if (m.hunterPhotoEnabled) count++;
+    if (m.fogEnabled) count++;
+    if (m.radarEnabled) count++;
+    if (m.trailEnabled) count++;
+    if (m.stealthStillEnabled) count++;
+    if (m.antiCampEnabled) count++;
+    if (m.hotColdEnabled) count++;
+    if (m.panicEndgameEnabled) count++;
+    if (m.testJoystickEnabled ?? true) count++;
+    return count;
+  }, [draft]);
 
   const handleZonesChange = (nextZonesConfig: ZonesConfig) => {
     setDraft((prev) => ({
@@ -76,88 +125,172 @@ export const RulesEditor: React.FC<RulesEditorProps> = ({
   };
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-6 sm:space-y-8">
-      {/* Cabecera del panel */}
-      <div className="flex flex-col gap-4 border-b border-slate-200 pb-5 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <p className="text-sm font-medium text-emerald-700">
-            Reglas y zonas · Sala{' '}
-            <span className="font-mono font-bold tracking-wider">{roomCode}</span>
-          </p>
-          <h1 className="font-display mt-1 text-2xl font-bold tracking-tight text-slate-900 sm:text-3xl">
-            Configura reglas y zonas de cierre
-          </h1>
-          <p className="mt-1 text-sm text-slate-600">
-            Ajusta los parámetros de partida y define en el mapa las fases estilo tormenta.
-          </p>
+    <form onSubmit={handleSubmit} className="clean-card overflow-hidden">
+      {/* Cabecera simple */}
+      <div className="border-b border-slate-100 px-5 py-5 sm:px-6">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-xs font-medium text-slate-500">
+              Sala {roomCode} · {rec.playersTag}
+            </p>
+            <h1 className="font-display mt-0.5 text-2xl font-bold tracking-tight text-slate-900">
+              Ajustes de partida
+            </h1>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-4 text-xs font-semibold">
+            <button
+              type="button"
+              onClick={() =>
+                setDraft((prev) => applyRecommendedToRules(prev, players.length))
+              }
+              className="text-emerald-700 hover:text-emerald-800 underline underline-offset-2"
+            >
+              Usar recomendados ({rec.playersTag})
+            </button>
+            <button
+              type="button"
+              onClick={() => setDraft(structuredClone(DEFAULT_RULES))}
+              className="text-slate-500 hover:text-slate-800"
+            >
+              Por defecto
+            </button>
+          </div>
         </div>
 
-        <button
-          type="button"
-          onClick={() => setDraft(structuredClone(DEFAULT_RULES))}
-          className="inline-flex min-h-[44px] items-center gap-2 self-start rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-50 hover:text-slate-900 whitespace-nowrap shrink-0"
+        {/* 3 pestañas simples */}
+        <div
+          role="tablist"
+          aria-label="Secciones de configuración"
+          className="mt-4 grid grid-cols-3 gap-1 rounded-xl bg-slate-100 p-1"
         >
-          <RotateCcw className="h-4 w-4" aria-hidden="true" />
-          <span>Restablecer valores</span>
-        </button>
+          {(
+            [
+              { id: 'general', label: '1. Básico' },
+              { id: 'zones', label: `2. Zonas (${zonesConfig.zones.length})` },
+              { id: 'modes', label: `3. Modos (${activeModesCount})` },
+            ] as const
+          ).map(({ id, label }) => {
+            const active = activeTab === id;
+            return (
+              <button
+                key={id}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => setActiveTab(id)}
+                className={`min-h-[40px] rounded-lg px-2 py-1.5 text-xs sm:text-sm font-semibold transition-colors whitespace-nowrap ${
+                  active
+                    ? 'bg-white text-slate-900 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
-      {/* Grid de dos columnas en escritorio */}
-      <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-12">
-        {/* Columna izquierda: Reglas básicas */}
-        <section
-          aria-labelledby="basic-rules-heading"
-          className="rounded-3xl border border-slate-200 bg-white p-5 sm:p-6 shadow-xs lg:col-span-5"
-        >
-          <h2
-            id="basic-rules-heading"
-            className="font-display text-lg font-bold text-slate-900"
-          >
-            01. Reglas básicas
-          </h2>
-          <p className="mt-1 text-sm text-slate-500">
-            Duración máxima, equipo buscador y reparto de roles.
-          </p>
+      {/* Contenido de la pestaña */}
+      <div className="p-5 sm:p-6">
+        {activeTab === 'general' && (
+          <div className="grid grid-cols-1 gap-8 lg:grid-cols-12">
+            {/* Tiempos y reglas */}
+            <div className="space-y-5 lg:col-span-6">
+              <div>
+                <h2 className="font-display text-lg font-bold text-slate-900">
+                  Tiempos
+                </h2>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  Pon el número que quieras, sin límite máximo.
+                </p>
+              </div>
 
-          <div className="mt-6 space-y-6">
-            {/* Duración de ronda */}
-            <div>
-              <span className="block text-sm font-semibold text-slate-900">
-                Duración máxima de ronda
-              </span>
-              <div className="mt-2 grid grid-cols-5 gap-1.5 rounded-xl bg-slate-100 p-1">
-                {DURATIONS.map((mins) => {
-                  const active = draft.roundDuration === mins;
-                  return (
-                    <button
-                      key={mins}
-                      type="button"
-                      onClick={() =>
-                        setDraft((prev) => ({ ...prev, roundDuration: mins }))
-                      }
-                      className={`min-h-[44px] rounded-lg px-2 py-2 font-mono text-sm font-semibold tabular-nums transition-colors whitespace-nowrap ${
-                        active
-                          ? 'bg-white text-emerald-700 shadow-xs'
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                    >
-                      {mins}m
-                    </button>
-                  );
-                })}
+              <UnboundedNumberField
+                id="rule-round-duration"
+                label="Duración de la partida"
+                description="Minutos totales para jugar la ronda."
+                value={draft.roundDuration}
+                unit="min"
+                step={1}
+                min={1}
+                recommendedValue={rec.roundDuration}
+                onChange={(val) =>
+                  setDraft((prev) => ({ ...prev, roundDuration: val }))
+                }
+              />
+
+              <div className="border-t border-slate-100 pt-4">
+                <UnboundedNumberField
+                  id="rule-hide-time"
+                  label="Tiempo para esconderse"
+                  description="Los buscadores esperan sin ver el mapa al empezar."
+                  value={draft.hideTimeSec ?? 30}
+                  unit="s"
+                  step={5}
+                  min={1}
+                  recommendedValue={rec.hideTimeSec}
+                  onChange={(val) =>
+                    setDraft((prev) => ({ ...prev, hideTimeSec: val }))
+                  }
+                />
+              </div>
+
+              <div className="border-t border-slate-100 pt-4">
+                <UnboundedNumberField
+                  id="rule-storm-grace"
+                  label="Tiempo fuera de zona"
+                  description="Segundos máximos fuera del círculo antes de ser eliminado."
+                  value={draft.stormGraceSec ?? 30}
+                  unit="s"
+                  step={5}
+                  min={1}
+                  recommendedValue={rec.stormGraceSec}
+                  onChange={(val) =>
+                    setDraft((prev) => ({ ...prev, stormGraceSec: val }))
+                  }
+                />
+              </div>
+
+              <div className="flex items-center justify-between gap-4 border-t border-slate-100 pt-4">
+                <div>
+                  <p className="text-sm font-semibold text-slate-900">
+                    Bloquear si apagan el GPS
+                  </p>
+                  <p className="text-xs text-slate-500">
+                    Avisa a la sala y elimina tras 15 s sin ubicación.
+                  </p>
+                </div>
+                <CleanSwitch
+                  checked={draft.requireLocationGuard ?? true}
+                  ariaLabel="Alternar bloqueo por GPS apagado"
+                  onToggle={() =>
+                    setDraft((prev) => ({
+                      ...prev,
+                      requireLocationGuard: !(prev.requireLocationGuard ?? true),
+                    }))
+                  }
+                />
               </div>
             </div>
 
-            {/* Asignación de roles */}
-            <div>
-              <span className="block text-sm font-semibold text-slate-900">
-                Asignación de roles
-              </span>
-              <div className="mt-2 grid grid-cols-2 gap-1.5 rounded-xl bg-slate-100 p-1">
+            {/* Equipos y buscadores */}
+            <div className="space-y-5 border-t border-slate-100 pt-6 lg:col-span-6 lg:border-l lg:border-t-0 lg:pl-8 lg:pt-0">
+              <div>
+                <h2 className="font-display text-lg font-bold text-slate-900">
+                  Equipos
+                </h2>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  Elige quién busca al azar o manualmente.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-1 rounded-xl bg-slate-100 p-1">
                 {(
                   [
-                    { value: 'random', label: 'Aleatoria' },
-                    { value: 'manual', label: 'Manual' },
+                    { value: 'random', label: 'Al azar' },
+                    { value: 'manual', label: 'Elegir a mano' },
                   ] as const
                 ).map((opt) => {
                   const active = draft.roleAssignment === opt.value;
@@ -168,9 +301,9 @@ export const RulesEditor: React.FC<RulesEditorProps> = ({
                       onClick={() =>
                         setDraft((prev) => ({ ...prev, roleAssignment: opt.value }))
                       }
-                      className={`min-h-[44px] rounded-lg px-3 py-2 text-sm font-semibold transition-colors whitespace-nowrap ${
+                      className={`min-h-[40px] rounded-lg px-2 py-1.5 text-xs sm:text-sm font-semibold transition-colors whitespace-nowrap ${
                         active
-                          ? 'bg-white text-emerald-700 shadow-xs'
+                          ? 'bg-white text-slate-900 shadow-xs'
                           : 'text-slate-600 hover:text-slate-900'
                       }`}
                     >
@@ -179,325 +312,1020 @@ export const RulesEditor: React.FC<RulesEditorProps> = ({
                   );
                 })}
               </div>
-            </div>
 
-            {/* Nº de buscadores (si es aleatoria) O Selector directo de jugadores (si es manual) */}
-            {draft.roleAssignment === 'random' ? (
-              <div>
-                <span className="block text-sm font-semibold text-slate-900">
-                  Nº de buscadores
-                </span>
-                <div className="mt-2 grid grid-cols-4 gap-1.5 rounded-xl bg-slate-100 p-1">
-                  {SEEKER_OPTIONS.map((opt) => {
-                    const active = draft.seekersCount === opt.value;
-                    return (
-                      <button
-                        key={String(opt.value)}
-                        type="button"
-                        onClick={() =>
-                          setDraft((prev) => ({ ...prev, seekersCount: opt.value }))
-                        }
-                        className={`min-h-[44px] rounded-lg px-2 py-2 text-sm font-semibold transition-colors whitespace-nowrap ${
-                          active
-                            ? 'bg-white text-emerald-700 shadow-xs'
-                            : 'text-slate-600 hover:text-slate-900'
-                        }`}
-                      >
-                        {opt.label}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-2.5 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-sm font-semibold text-slate-900">
-                    Elegir buscadores ({selectedSeekersCount})
-                  </span>
-                  <span className="text-xs text-slate-500">
-                    {players.length} en sala
-                  </span>
-                </div>
+              {draft.roleAssignment === 'random' ? (
+                <div className="space-y-4 border-t border-slate-100 pt-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-900">
+                        Buscadores al azar
+                      </p>
+                      <p className="text-xs text-slate-500">
+                        Si lo apagas, eliges el número exacto.
+                      </p>
+                    </div>
+                    <CleanSwitch
+                      checked={draft.seekersCount === 'random'}
+                      ariaLabel="Cantidad aleatoria de buscadores"
+                      onToggle={() =>
+                        setDraft((prev) => ({
+                          ...prev,
+                          seekersCount:
+                            prev.seekersCount === 'random'
+                              ? rec.seekersCount
+                              : 'random',
+                        }))
+                      }
+                    />
+                  </div>
 
-                {players.length === 0 ? (
-                  <p className="text-xs text-slate-500">
-                    No hay jugadores conectados todavía.
-                  </p>
-                ) : (
-                  <ul className="divide-y divide-slate-200/80">
-                    {players.map((p) => {
-                      const role: PlayerRole =
-                        manualRoles[p.id] === 'seeker' ? 'seeker' : 'hider';
-                      return (
-                        <li
-                          key={p.id}
-                          className="flex flex-wrap items-center justify-between gap-2 py-2.5 first:pt-1 last:pb-1"
-                        >
-                          <div className="flex min-w-0 items-center gap-2.5">
-                            <PlayerAvatar
-                              emoji={p.emoji}
-                              color={p.color}
-                              size="sm"
-                              name={p.name}
-                            />
-                            <div className="min-w-0">
-                              <p className="truncate text-sm font-semibold text-slate-900">
-                                {p.name}
-                              </p>
-                              <div className="flex items-center gap-1.5 text-[11px] text-slate-500">
-                                {p.is_host && (
-                                  <span className="inline-flex items-center gap-0.5 font-semibold text-amber-700">
-                                    <Crown className="h-3 w-3" aria-hidden="true" />
-                                    Anfitrión
-                                  </span>
-                                )}
-                                {p.id === currentPlayerId && (
-                                  <span className="font-medium text-emerald-700">
-                                    Tú
-                                  </span>
-                                )}
+                  {draft.seekersCount !== 'random' && (
+                    <UnboundedNumberField
+                      id="rule-seekers-count"
+                      label="Cuántos buscan"
+                      description="Siempre queda al menos 1 fugitivo."
+                      value={Number(draft.seekersCount) || 1}
+                      unit="pers."
+                      step={1}
+                      min={1}
+                      recommendedValue={rec.seekersCount}
+                      onChange={(val) =>
+                        setDraft((prev) => ({ ...prev, seekersCount: val }))
+                      }
+                    />
+                  )}
+                </div>
+              ) : (
+                <div className="space-y-2 border-t border-slate-100 pt-4">
+                  <div className="flex items-center justify-between text-xs text-slate-500">
+                    <span>Buscadores: {selectedSeekersCount}</span>
+                    <span>Recomendado: {rec.seekersCount}</span>
+                  </div>
+
+                  {players.length === 0 ? (
+                    <p className="text-xs text-slate-500">
+                      Todavía no hay jugadores conectados.
+                    </p>
+                  ) : (
+                    <ul className="divide-y divide-slate-100">
+                      {players.map((p) => {
+                        const role: PlayerRole =
+                          manualRoles[p.id] === 'seeker' ? 'seeker' : 'hider';
+                        return (
+                          <li
+                            key={p.id}
+                            className="flex flex-wrap items-center justify-between gap-2 py-2.5"
+                          >
+                            <div className="flex min-w-0 items-center gap-2.5">
+                              <PlayerAvatar
+                                emoji={p.emoji}
+                                color={p.color}
+                                size="sm"
+                                name={p.name}
+                              />
+                              <div className="min-w-0">
+                                <p className="truncate text-sm font-semibold text-slate-900">
+                                  {p.name}
+                                </p>
+                                <div className="flex items-center gap-1.5 text-[11px] text-slate-500">
+                                  {p.is_host && (
+                                    <span className="inline-flex items-center gap-0.5 text-amber-600">
+                                      <Crown className="h-3 w-3" aria-hidden="true" />
+                                      Anfitrión
+                                    </span>
+                                  )}
+                                  {p.id === currentPlayerId && (
+                                    <span className="font-semibold text-emerald-700">
+                                      Tú
+                                    </span>
+                                  )}
+                                </div>
                               </div>
                             </div>
-                          </div>
 
-                          <div className="inline-flex rounded-xl bg-slate-200/80 p-0.5 shrink-0">
-                            <button
-                              type="button"
-                              onClick={() => handleSetPlayerRole(p.id, 'hider')}
-                              className={`inline-flex min-h-[36px] items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-semibold transition-colors whitespace-nowrap ${
-                                role === 'hider'
-                                  ? 'bg-white text-emerald-700 shadow-xs'
-                                  : 'text-slate-600'
-                              }`}
-                            >
-                              <Shield className="h-3.5 w-3.5" aria-hidden="true" />
-                              <span>Escondido</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleSetPlayerRole(p.id, 'seeker')}
-                              className={`inline-flex min-h-[36px] items-center gap-1 rounded-lg px-2.5 py-1 text-xs font-semibold transition-colors whitespace-nowrap ${
-                                role === 'seeker'
-                                  ? 'bg-white text-rose-700 shadow-xs'
-                                  : 'text-slate-600'
-                              }`}
-                            >
-                              <Eye className="h-3.5 w-3.5" aria-hidden="true" />
-                              <span>Buscador</span>
-                            </button>
-                          </div>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
-
-                {selectedSeekersCount === 0 && (
-                  <p className="text-xs font-medium text-amber-800">
-                    Elige al menos 1 buscador de la lista (si no eliges ninguno, se asignará automáticamente al iniciar).
-                  </p>
-                )}
-              </div>
-            )}
-
-            {/* Pistas periódicas */}
-            <div className="flex items-center justify-between gap-4 border-t border-slate-100 pt-5">
-              <div>
-                <p className="text-sm font-semibold text-slate-900">
-                  Pistas periódicas
-                </p>
-                <p className="mt-0.5 text-xs text-slate-500">
-                  Envía avisos automáticos a los buscadores durante la ronda.
-                </p>
-              </div>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={draft.hints}
-                aria-label="Alternar pistas periódicas"
-                onClick={() =>
-                  setDraft((prev) => ({ ...prev, hints: !prev.hints }))
-                }
-                className={`relative inline-flex h-8 w-14 shrink-0 items-center rounded-full p-1 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700 ${
-                  draft.hints ? 'bg-emerald-700' : 'bg-slate-300'
-                }`}
-              >
-                <span
-                  className={`inline-block h-6 w-6 rounded-full bg-white shadow-sm transition-transform ${
-                    draft.hints ? 'translate-x-6' : 'translate-x-0'
-                  }`}
-                />
-              </button>
-            </div>
-
-            {/* Visibilidad en el mapa: Jugadores <-> Buscador */}
-            <div className="space-y-4 border-t border-slate-100 pt-5">
-              <div>
-                <p className="text-sm font-semibold text-slate-900">
-                  Visibilidad en el mapa durante la partida
-                </p>
-                <p className="mt-0.5 text-xs text-slate-500">
-                  Elige si unos pueden ver la ubicación GPS de los otros.
-                </p>
-              </div>
-
-              <div className="flex items-center justify-between gap-4">
-                <div>
-                  <p className="text-sm font-medium text-slate-900">
-                    Los jugadores ven al buscador
-                  </p>
-                  <p className="text-xs text-slate-500">
-                    Los escondidos verán la posición del buscador en el mapa.
-                  </p>
+                            <div className="inline-flex rounded-xl bg-slate-100 p-0.5 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => handleSetPlayerRole(p.id, 'hider')}
+                                className={`inline-flex min-h-[34px] items-center gap-1 rounded-lg px-2.5 text-xs font-semibold transition-colors whitespace-nowrap ${
+                                  role === 'hider'
+                                    ? 'bg-emerald-600 text-white'
+                                    : 'text-slate-600 hover:text-slate-900'
+                                }`}
+                              >
+                                <Shield className="h-3.5 w-3.5" aria-hidden="true" />
+                                <span>Fugitivo</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleSetPlayerRole(p.id, 'seeker')}
+                                className={`inline-flex min-h-[34px] items-center gap-1 rounded-lg px-2.5 text-xs font-semibold transition-colors whitespace-nowrap ${
+                                  role === 'seeker'
+                                    ? 'bg-rose-600 text-white'
+                                    : 'text-slate-600 hover:text-slate-900'
+                                }`}
+                              >
+                                <Eye className="h-3.5 w-3.5" aria-hidden="true" />
+                                <span>Buscador</span>
+                              </button>
+                            </div>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
                 </div>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={Boolean(draft.hidersCanSeeSeekers)}
-                  aria-label="Los jugadores ven al buscador"
-                  onClick={() =>
-                    setDraft((prev) => ({
-                      ...prev,
-                      hidersCanSeeSeekers: !prev.hidersCanSeeSeekers,
-                    }))
-                  }
-                  className={`relative inline-flex h-8 w-14 shrink-0 items-center rounded-full p-1 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700 ${
-                    draft.hidersCanSeeSeekers ? 'bg-emerald-700' : 'bg-slate-300'
-                  }`}
-                >
-                  <span
-                    className={`inline-block h-6 w-6 rounded-full bg-white shadow-sm transition-transform ${
-                      draft.hidersCanSeeSeekers ? 'translate-x-6' : 'translate-x-0'
-                    }`}
-                  />
-                </button>
-              </div>
-
-              <div className="flex items-center justify-between gap-4">
-                <div>
-                  <p className="text-sm font-medium text-slate-900">
-                    El buscador ve a los jugadores
-                  </p>
-                  <p className="text-xs text-slate-500">
-                    El buscador verá la ubicación GPS de los escondidos.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={Boolean(draft.seekersCanSeeHiders)}
-                  aria-label="El buscador ve a los jugadores"
-                  onClick={() =>
-                    setDraft((prev) => ({
-                      ...prev,
-                      seekersCanSeeHiders: !prev.seekersCanSeeHiders,
-                    }))
-                  }
-                  className={`relative inline-flex h-8 w-14 shrink-0 items-center rounded-full p-1 transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-700 ${
-                    draft.seekersCanSeeHiders ? 'bg-emerald-700' : 'bg-slate-300'
-                  }`}
-                >
-                  <span
-                    className={`inline-block h-6 w-6 rounded-full bg-white shadow-sm transition-transform ${
-                      draft.seekersCanSeeHiders ? 'translate-x-6' : 'translate-x-0'
-                    }`}
-                  />
-                </button>
-              </div>
-            </div>
-
-            {/* Castigo por tormenta */}
-            <div className="border-t border-slate-100 pt-5">
-              <div className="flex items-center justify-between gap-2">
-                <span className="block text-sm font-semibold text-slate-900">
-                  Tiempo máximo en tormenta
-                </span>
-                <span className="font-mono text-xs font-semibold text-violet-700">
-                  {draft.stormGraceSec ?? 30} s
-                </span>
-              </div>
-              <p className="mt-0.5 text-xs text-slate-500">
-                A mitad de tiempo se revela tu posición en el mapa; al llegar a 0 s quedas eliminado por la tormenta.
-              </p>
-              <div className="mt-2 grid grid-cols-4 gap-1.5 rounded-xl bg-slate-100 p-1">
-                {STORM_GRACE_OPTIONS.map((sec) => {
-                  const active = (draft.stormGraceSec ?? 30) === sec;
-                  return (
-                    <button
-                      key={sec}
-                      type="button"
-                      onClick={() =>
-                        setDraft((prev) => ({ ...prev, stormGraceSec: sec }))
-                      }
-                      className={`min-h-[44px] rounded-lg px-2 py-2 font-mono text-sm font-semibold tabular-nums transition-colors whitespace-nowrap ${
-                        active
-                          ? 'bg-white text-violet-700 shadow-xs'
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                    >
-                      {sec}s
-                    </button>
-                  );
-                })}
-              </div>
+              )}
             </div>
           </div>
-        </section>
+        )}
 
-        {/* Columna derecha: Selección y mapa de zonas estilo Fortnite */}
-        <section
-          aria-labelledby="zones-config-heading"
-          className="rounded-3xl border border-slate-200 bg-white p-5 sm:p-6 shadow-xs lg:col-span-7"
-        >
-          <div className="mb-4 border-b border-slate-100 pb-3">
-            <h2
-              id="zones-config-heading"
-              className="font-display text-lg font-bold text-slate-900"
-            >
-              02. Mapa y selección de zonas
-            </h2>
-          </div>
-
+        {activeTab === 'zones' && (
           <ZoneMapEditor
             zonesConfig={zonesConfig}
             isHost={true}
+            playerCount={players.length}
             onUpdateZonesConfig={handleZonesChange}
           />
-        </section>
+        )}
+
+        {activeTab === 'modes' && (
+          <div className="space-y-4">
+            <p className="text-sm text-slate-600">
+              Enciende solo las reglas que quieras usar. Al activar una verás sus números.
+            </p>
+
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              {/* 1. Juego clásico */}
+              <div
+                className={`rounded-2xl border p-4 space-y-3 md:col-span-2 transition-colors ${
+                  draft.modifiers.classicModeEnabled
+                    ? 'border-emerald-200 bg-emerald-50/40'
+                    : 'border-slate-200 bg-white'
+                }`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-900">
+                      <span className="mr-1.5" aria-hidden="true">🎮</span>
+                      Juego clásico
+                    </p>
+                    <p className="mt-0.5 text-xs text-slate-500">
+                      Muestra jugadores en el mapa o enseña pistas cada cierto tiempo.
+                    </p>
+                  </div>
+                  <CleanSwitch
+                    checked={Boolean(draft.modifiers.classicModeEnabled)}
+                    ariaLabel="Alternar juego clásico"
+                    onToggle={() =>
+                      setDraft((prev) => {
+                        const nextOn = !prev.modifiers.classicModeEnabled;
+                        const anySubEnabled =
+                          prev.hints ||
+                          prev.hidersCanSeeSeekers ||
+                          prev.seekersCanSeeHiders;
+                        return {
+                          ...prev,
+                          hints: nextOn && !anySubEnabled ? true : prev.hints,
+                          modifiers: {
+                            ...prev.modifiers,
+                            classicModeEnabled: nextOn,
+                          },
+                        };
+                      })
+                    }
+                  />
+                </div>
+
+                {draft.modifiers.classicModeEnabled && (
+                  <div className="border-t border-slate-200/70 pt-3 grid grid-cols-1 gap-4 sm:grid-cols-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div>
+                        <p className="text-xs font-semibold text-slate-900">
+                          Fugitivos ven al buscador
+                        </p>
+                        <p className="text-[11px] text-slate-500">
+                          Visible siempre en el mapa.
+                        </p>
+                      </div>
+                      <CleanSwitch
+                        checked={Boolean(draft.hidersCanSeeSeekers)}
+                        ariaLabel="Los fugitivos ven al buscador"
+                        onToggle={() =>
+                          setDraft((prev) => ({
+                            ...prev,
+                            hidersCanSeeSeekers: !prev.hidersCanSeeSeekers,
+                          }))
+                        }
+                      />
+                    </div>
+
+                    <div className="flex items-center justify-between gap-2">
+                      <div>
+                        <p className="text-xs font-semibold text-slate-900">
+                          Buscador ve a fugitivos
+                        </p>
+                        <p className="text-[11px] text-slate-500">
+                          Visible siempre en el mapa.
+                        </p>
+                      </div>
+                      <CleanSwitch
+                        checked={Boolean(draft.seekersCanSeeHiders)}
+                        ariaLabel="El buscador ve a los fugitivos"
+                        onToggle={() =>
+                          setDraft((prev) => ({
+                            ...prev,
+                            seekersCanSeeHiders: !prev.seekersCanSeeHiders,
+                          }))
+                        }
+                      />
+                    </div>
+
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <div>
+                          <p className="text-xs font-semibold text-slate-900">
+                            Pistas cada poco
+                          </p>
+                          <p className="text-[11px] text-slate-500">
+                            Muestra dónde están un momento.
+                          </p>
+                        </div>
+                        <CleanSwitch
+                          checked={Boolean(draft.hints)}
+                          ariaLabel="Alternar pistas periódicas"
+                          onToggle={() =>
+                            setDraft((prev) => ({ ...prev, hints: !prev.hints }))
+                          }
+                        />
+                      </div>
+
+                      {draft.hints && (
+                        <div className="space-y-3 border-t border-slate-200/70 pt-2.5">
+                          <UnboundedNumberField
+                            id="mod-classic-hint-sec"
+                            label="Cada cuántos segundos"
+                            value={draft.modifiers.classicHintIntervalSec ?? 30}
+                            unit="s"
+                            step={5}
+                            min={1}
+                            recommendedValue={rec.classicHintIntervalSec}
+                            onChange={(sec) =>
+                              setDraft((prev) => ({
+                                ...prev,
+                                modifiers: {
+                                  ...prev.modifiers,
+                                  classicHintIntervalSec: sec,
+                                },
+                              }))
+                            }
+                          />
+
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-xs font-medium text-slate-700">
+                              Enseñar también al buscador
+                            </span>
+                            <CleanSwitch
+                              checked={Boolean(
+                                draft.modifiers.classicHintsIncludeSeeker
+                              )}
+                              ariaLabel="Mostrar también al buscador en las pistas"
+                              onToggle={() =>
+                                setDraft((prev) => ({
+                                  ...prev,
+                                  modifiers: {
+                                    ...prev.modifiers,
+                                    classicHintsIncludeSeeker:
+                                      !prev.modifiers.classicHintsIncludeSeeker,
+                                  },
+                                }))
+                              }
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* 2. Victoria por tiempo */}
+              <div
+                className={`rounded-2xl border p-4 space-y-3 transition-colors ${
+                  draft.timeVictoryEnabled ?? true
+                    ? 'border-emerald-200 bg-emerald-50/40'
+                    : 'border-slate-200 bg-white'
+                }`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-900">
+                      <span className="mr-1.5" aria-hidden="true">⏳</span>
+                      Victoria por tiempo
+                    </p>
+                    <p className="mt-0.5 text-xs text-slate-500">
+                      Los fugitivos ganan si llegan vivos al final del reloj.
+                    </p>
+                  </div>
+                  <CleanSwitch
+                    checked={draft.timeVictoryEnabled ?? true}
+                    ariaLabel="Alternar victoria por tiempo para fugitivos"
+                    onToggle={() =>
+                      setDraft((prev) => ({
+                        ...prev,
+                        timeVictoryEnabled: !(prev.timeVictoryEnabled ?? true),
+                      }))
+                    }
+                  />
+                </div>
+                {(draft.timeVictoryEnabled ?? true) && (
+                  <div className="border-t border-slate-200/70 pt-3">
+                    <UnboundedNumberField
+                      id="mod-time-victory"
+                      label="Minutos para ganar"
+                      value={draft.roundDuration}
+                      unit="min"
+                      step={1}
+                      min={1}
+                      recommendedValue={rec.roundDuration}
+                      onChange={(mins) =>
+                        setDraft((prev) => ({ ...prev, roundDuration: mins }))
+                      }
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* 3. Baliza de extracción */}
+              <div
+                className={`rounded-2xl border p-4 space-y-3 transition-colors ${
+                  draft.beaconVictoryEnabled ?? true
+                    ? 'border-emerald-200 bg-emerald-50/40'
+                    : 'border-slate-200 bg-white'
+                }`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-900">
+                      <span className="mr-1.5" aria-hidden="true">🚩</span>
+                      Baliza de extracción
+                    </p>
+                    <p className="mt-0.5 text-xs text-slate-500">
+                      Bandera verde: si un fugitivo aguanta dentro, gana al instante.
+                    </p>
+                  </div>
+                  <CleanSwitch
+                    checked={draft.beaconVictoryEnabled ?? true}
+                    ariaLabel="Alternar baliza de extracción"
+                    onToggle={() =>
+                      setDraft((prev) => ({
+                        ...prev,
+                        beaconVictoryEnabled: !(prev.beaconVictoryEnabled ?? true),
+                      }))
+                    }
+                  />
+                </div>
+                {(draft.beaconVictoryEnabled ?? true) && (
+                  <div className="border-t border-slate-200/70 pt-3 space-y-3">
+                    <UnboundedNumberField
+                      id="mod-beacon-hold"
+                      label="Segundos dentro"
+                      value={draft.modifiers.beaconHoldSec ?? 8}
+                      unit="s"
+                      step={1}
+                      min={1}
+                      recommendedValue={rec.beaconHoldSec}
+                      onChange={(sec) =>
+                        setDraft((prev) => ({
+                          ...prev,
+                          modifiers: { ...prev.modifiers, beaconHoldSec: sec },
+                        }))
+                      }
+                    />
+                    <UnboundedNumberField
+                      id="mod-beacon-radius"
+                      label="Radio de la baliza"
+                      value={draft.modifiers.beaconRadiusM ?? 25}
+                      unit="m"
+                      step={5}
+                      min={1}
+                      recommendedValue={rec.beaconRadiusM}
+                      onChange={(m) =>
+                        setDraft((prev) => ({
+                          ...prev,
+                          modifiers: { ...prev.modifiers, beaconRadiusM: m },
+                        }))
+                      }
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* 4. Foto con el cazador */}
+              <div
+                className={`rounded-2xl border p-4 space-y-3 transition-colors ${
+                  draft.modifiers.hunterPhotoEnabled
+                    ? 'border-emerald-200 bg-emerald-50/40'
+                    : 'border-slate-200 bg-white'
+                }`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-900">
+                      <span className="mr-1.5" aria-hidden="true">📸</span>
+                      Foto con el cazador
+                    </p>
+                    <p className="mt-0.5 text-xs text-slate-500">
+                      Los fugitivos deben hacerse un selfie donde salga el buscador.
+                    </p>
+                  </div>
+                  <CleanSwitch
+                    checked={Boolean(draft.modifiers.hunterPhotoEnabled)}
+                    ariaLabel="Alternar foto con el cazador"
+                    onToggle={() =>
+                      setDraft((prev) => ({
+                        ...prev,
+                        modifiers: {
+                          ...prev.modifiers,
+                          hunterPhotoEnabled: !prev.modifiers.hunterPhotoEnabled,
+                        },
+                      }))
+                    }
+                  />
+                </div>
+                {draft.modifiers.hunterPhotoEnabled && (
+                  <div className="border-t border-slate-200/70 pt-3 space-y-3">
+                    <UnboundedNumberField
+                      id="mod-photo-window"
+                      label="Tiempo para hacerla"
+                      value={draft.modifiers.hunterPhotoWindowSec ?? 60}
+                      unit="s"
+                      step={10}
+                      min={1}
+                      recommendedValue={rec.hunterPhotoWindowSec}
+                      onChange={(sec) =>
+                        setDraft((prev) => ({
+                          ...prev,
+                          modifiers: {
+                            ...prev.modifiers,
+                            hunterPhotoWindowSec: sec,
+                          },
+                        }))
+                      }
+                    />
+                    <UnboundedNumberField
+                      id="mod-photo-delay"
+                      label="Cuándo empieza el reto"
+                      value={draft.modifiers.hunterPhotoDelaySec ?? 15}
+                      unit="s"
+                      step={5}
+                      min={1}
+                      recommendedValue={rec.hunterPhotoDelaySec}
+                      onChange={(sec) =>
+                        setDraft((prev) => ({
+                          ...prev,
+                          modifiers: {
+                            ...prev.modifiers,
+                            hunterPhotoDelaySec: sec,
+                          },
+                        }))
+                      }
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* 5. Modo niebla */}
+              <div
+                className={`rounded-2xl border p-4 space-y-3 transition-colors ${
+                  draft.modifiers.fogEnabled
+                    ? 'border-emerald-200 bg-emerald-50/40'
+                    : 'border-slate-200 bg-white'
+                }`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-900">
+                      <span className="mr-1.5" aria-hidden="true">🌫️</span>
+                      Modo niebla
+                    </p>
+                    <p className="mt-0.5 text-xs text-slate-500">
+                      Oscurece el mapa: solo ves a otros si están muy cerca.
+                    </p>
+                  </div>
+                  <CleanSwitch
+                    checked={Boolean(draft.modifiers.fogEnabled)}
+                    ariaLabel="Alternar modo niebla"
+                    onToggle={() =>
+                      setDraft((prev) => ({
+                        ...prev,
+                        modifiers: {
+                          ...prev.modifiers,
+                          fogEnabled: !prev.modifiers.fogEnabled,
+                        },
+                      }))
+                    }
+                  />
+                </div>
+                {draft.modifiers.fogEnabled && (
+                  <div className="border-t border-slate-200/70 pt-3">
+                    <UnboundedNumberField
+                      id="mod-fog-radius"
+                      label="Distancia visible"
+                      value={draft.modifiers.fogRadiusM ?? 60}
+                      unit="m"
+                      step={10}
+                      min={1}
+                      recommendedValue={rec.fogRadiusM}
+                      onChange={(m) =>
+                        setDraft((prev) => ({
+                          ...prev,
+                          modifiers: { ...prev.modifiers, fogRadiusM: m },
+                        }))
+                      }
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* 6. Modo radar */}
+              <div
+                className={`rounded-2xl border p-4 space-y-3 transition-colors ${
+                  draft.modifiers.radarEnabled
+                    ? 'border-emerald-200 bg-emerald-50/40'
+                    : 'border-slate-200 bg-white'
+                }`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-900">
+                      <span className="mr-1.5" aria-hidden="true">📡</span>
+                      Modo radar
+                    </p>
+                    <p className="mt-0.5 text-xs text-slate-500">
+                      Envía un pulso cada pocos segundos con la posición cercana.
+                    </p>
+                  </div>
+                  <CleanSwitch
+                    checked={Boolean(draft.modifiers.radarEnabled)}
+                    ariaLabel="Alternar modo radar"
+                    onToggle={() =>
+                      setDraft((prev) => ({
+                        ...prev,
+                        modifiers: {
+                          ...prev.modifiers,
+                          radarEnabled: !prev.modifiers.radarEnabled,
+                        },
+                      }))
+                    }
+                  />
+                </div>
+                {draft.modifiers.radarEnabled && (
+                  <div className="border-t border-slate-200/70 pt-3 space-y-3">
+                    <UnboundedNumberField
+                      id="mod-radar-interval"
+                      label="Cada cuántos segundos"
+                      value={draft.modifiers.radarIntervalSec ?? 20}
+                      unit="s"
+                      step={5}
+                      min={1}
+                      recommendedValue={rec.radarIntervalSec}
+                      onChange={(sec) =>
+                        setDraft((prev) => ({
+                          ...prev,
+                          modifiers: { ...prev.modifiers, radarIntervalSec: sec },
+                        }))
+                      }
+                    />
+                    <UnboundedNumberField
+                      id="mod-radar-range"
+                      label="Alcance del radar"
+                      value={draft.modifiers.radarRangeM ?? 300}
+                      unit="m"
+                      step={25}
+                      min={1}
+                      recommendedValue={rec.radarRangeM}
+                      onChange={(m) =>
+                        setDraft((prev) => ({
+                          ...prev,
+                          modifiers: { ...prev.modifiers, radarRangeM: m },
+                        }))
+                      }
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* 7. Modo rastro */}
+              <div
+                className={`rounded-2xl border p-4 space-y-3 transition-colors ${
+                  draft.modifiers.trailEnabled
+                    ? 'border-emerald-200 bg-emerald-50/40'
+                    : 'border-slate-200 bg-white'
+                }`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-900">
+                      <span className="mr-1.5" aria-hidden="true">👣</span>
+                      Modo rastro
+                    </p>
+                    <p className="mt-0.5 text-xs text-slate-500">
+                      Deja huellas temporales en el mapa para seguir pasos.
+                    </p>
+                  </div>
+                  <CleanSwitch
+                    checked={Boolean(draft.modifiers.trailEnabled)}
+                    ariaLabel="Alternar modo rastro"
+                    onToggle={() =>
+                      setDraft((prev) => ({
+                        ...prev,
+                        modifiers: {
+                          ...prev.modifiers,
+                          trailEnabled: !prev.modifiers.trailEnabled,
+                        },
+                      }))
+                    }
+                  />
+                </div>
+                {draft.modifiers.trailEnabled && (
+                  <div className="border-t border-slate-200/70 pt-3">
+                    <UnboundedNumberField
+                      id="mod-trail-duration"
+                      label="Duración de las huellas"
+                      value={draft.modifiers.trailDurationSec ?? 90}
+                      unit="s"
+                      step={15}
+                      min={1}
+                      recommendedValue={rec.trailDurationSec}
+                      onChange={(sec) =>
+                        setDraft((prev) => ({
+                          ...prev,
+                          modifiers: { ...prev.modifiers, trailDurationSec: sec },
+                        }))
+                      }
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* 8. Sigilo inmóvil */}
+              <div
+                className={`rounded-2xl border p-4 space-y-3 transition-colors ${
+                  draft.modifiers.stealthStillEnabled
+                    ? 'border-emerald-200 bg-emerald-50/40'
+                    : 'border-slate-200 bg-white'
+                }`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-900">
+                      <span className="mr-1.5" aria-hidden="true">🥷</span>
+                      Sigilo inmóvil
+                    </p>
+                    <p className="mt-0.5 text-xs text-slate-500">
+                      Al quedarte quieto, desapareces del radar y no dejas huellas.
+                    </p>
+                  </div>
+                  <CleanSwitch
+                    checked={Boolean(draft.modifiers.stealthStillEnabled)}
+                    ariaLabel="Alternar sigilo inmóvil"
+                    onToggle={() =>
+                      setDraft((prev) => ({
+                        ...prev,
+                        modifiers: {
+                          ...prev.modifiers,
+                          stealthStillEnabled: !prev.modifiers.stealthStillEnabled,
+                        },
+                      }))
+                    }
+                  />
+                </div>
+                {draft.modifiers.stealthStillEnabled && (
+                  <div className="border-t border-slate-200/70 pt-3">
+                    <UnboundedNumberField
+                      id="mod-stealth-delay"
+                      label="Segundos quieto"
+                      value={draft.modifiers.stealthStillDelaySec ?? 10}
+                      unit="s"
+                      step={2}
+                      min={1}
+                      recommendedValue={rec.stealthStillDelaySec}
+                      onChange={(sec) =>
+                        setDraft((prev) => ({
+                          ...prev,
+                          modifiers: {
+                            ...prev.modifiers,
+                            stealthStillDelaySec: sec,
+                          },
+                        }))
+                      }
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* 9. Prohibido campear */}
+              <div
+                className={`rounded-2xl border p-4 space-y-3 transition-colors ${
+                  draft.modifiers.antiCampEnabled
+                    ? 'border-emerald-200 bg-emerald-50/40'
+                    : 'border-slate-200 bg-white'
+                }`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-900">
+                      <span className="mr-1.5" aria-hidden="true">🚨</span>
+                      Prohibido campear
+                    </p>
+                    <p className="mt-0.5 text-xs text-slate-500">
+                      Si un fugitivo no se mueve durante mucho tiempo, aparece en el mapa.
+                    </p>
+                  </div>
+                  <CleanSwitch
+                    checked={Boolean(draft.modifiers.antiCampEnabled)}
+                    ariaLabel="Alternar prohibido campear"
+                    onToggle={() =>
+                      setDraft((prev) => ({
+                        ...prev,
+                        modifiers: {
+                          ...prev.modifiers,
+                          antiCampEnabled: !prev.modifiers.antiCampEnabled,
+                        },
+                      }))
+                    }
+                  />
+                </div>
+                {draft.modifiers.antiCampEnabled && (
+                  <div className="border-t border-slate-200/70 pt-3 space-y-3">
+                    <UnboundedNumberField
+                      id="mod-anticamp-limit"
+                      label="Tiempo quieto máximo"
+                      value={draft.modifiers.antiCampLimitSec ?? 45}
+                      unit="s"
+                      step={5}
+                      min={1}
+                      recommendedValue={rec.antiCampLimitSec}
+                      onChange={(sec) =>
+                        setDraft((prev) => ({
+                          ...prev,
+                          modifiers: { ...prev.modifiers, antiCampLimitSec: sec },
+                        }))
+                      }
+                    />
+                    <UnboundedNumberField
+                      id="mod-anticamp-radius"
+                      label="Distancia mínima"
+                      value={draft.modifiers.antiCampRadiusM ?? 12}
+                      unit="m"
+                      step={2}
+                      min={1}
+                      recommendedValue={rec.antiCampRadiusM}
+                      onChange={(m) =>
+                        setDraft((prev) => ({
+                          ...prev,
+                          modifiers: { ...prev.modifiers, antiCampRadiusM: m },
+                        }))
+                      }
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* 10. Frío / Caliente */}
+              <div
+                className={`rounded-2xl border p-4 space-y-3 transition-colors ${
+                  draft.modifiers.hotColdEnabled
+                    ? 'border-emerald-200 bg-emerald-50/40'
+                    : 'border-slate-200 bg-white'
+                }`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-900">
+                      <span className="mr-1.5" aria-hidden="true">🌡️</span>
+                      Frío / Caliente
+                    </p>
+                    <p className="mt-0.5 text-xs text-slate-500">
+                      Indica arriba si estás lejos o muy cerca del rival más cercano.
+                    </p>
+                  </div>
+                  <CleanSwitch
+                    checked={Boolean(draft.modifiers.hotColdEnabled)}
+                    ariaLabel="Alternar termómetro frío caliente"
+                    onToggle={() =>
+                      setDraft((prev) => ({
+                        ...prev,
+                        modifiers: {
+                          ...prev.modifiers,
+                          hotColdEnabled: !prev.modifiers.hotColdEnabled,
+                        },
+                      }))
+                    }
+                  />
+                </div>
+                {draft.modifiers.hotColdEnabled && (
+                  <div className="border-t border-slate-200/70 pt-3">
+                    <UnboundedNumberField
+                      id="mod-hotcold-near"
+                      label="Distancia de cerca"
+                      value={draft.modifiers.hotColdNearM ?? 35}
+                      unit="m"
+                      step={5}
+                      min={1}
+                      recommendedValue={rec.hotColdNearM}
+                      onChange={(m) =>
+                        setDraft((prev) => ({
+                          ...prev,
+                          modifiers: { ...prev.modifiers, hotColdNearM: m },
+                        }))
+                      }
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* 11. Recta final frenética */}
+              <div
+                className={`rounded-2xl border p-4 space-y-3 transition-colors ${
+                  draft.modifiers.panicEndgameEnabled
+                    ? 'border-emerald-200 bg-emerald-50/40'
+                    : 'border-slate-200 bg-white'
+                }`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-900">
+                      <span className="mr-1.5" aria-hidden="true">⚡</span>
+                      Recta final frenética
+                    </p>
+                    <p className="mt-0.5 text-xs text-slate-500">
+                      En los últimos segundos, el buscador ve los metros hasta el fugitivo.
+                    </p>
+                  </div>
+                  <CleanSwitch
+                    checked={Boolean(draft.modifiers.panicEndgameEnabled)}
+                    ariaLabel="Alternar recta final frenética"
+                    onToggle={() =>
+                      setDraft((prev) => ({
+                        ...prev,
+                        modifiers: {
+                          ...prev.modifiers,
+                          panicEndgameEnabled: !prev.modifiers.panicEndgameEnabled,
+                        },
+                      }))
+                    }
+                  />
+                </div>
+                {draft.modifiers.panicEndgameEnabled && (
+                  <div className="border-t border-slate-200/70 pt-3 space-y-3">
+                    <UnboundedNumberField
+                      id="mod-panic-window"
+                      label="Últimos segundos"
+                      value={draft.modifiers.panicWindowSec ?? 60}
+                      unit="s"
+                      step={10}
+                      min={1}
+                      recommendedValue={rec.panicWindowSec}
+                      onChange={(sec) =>
+                        setDraft((prev) => ({
+                          ...prev,
+                          modifiers: { ...prev.modifiers, panicWindowSec: sec },
+                        }))
+                      }
+                    />
+                    <UnboundedNumberField
+                      id="mod-panic-ping"
+                      label="Frecuencia de aviso"
+                      value={draft.modifiers.panicPingIntervalSec ?? 15}
+                      unit="s"
+                      step={5}
+                      min={1}
+                      recommendedValue={rec.panicPingIntervalSec}
+                      onChange={(sec) =>
+                        setDraft((prev) => ({
+                          ...prev,
+                          modifiers: {
+                            ...prev.modifiers,
+                            panicPingIntervalSec: sec,
+                          },
+                        }))
+                      }
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* 12. Joystick de prueba */}
+              <div
+                className={`rounded-2xl border p-4 space-y-3 md:col-span-2 transition-colors ${
+                  draft.modifiers.testJoystickEnabled ?? true
+                    ? 'border-emerald-200 bg-emerald-50/40'
+                    : 'border-slate-200 bg-white'
+                }`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-900">
+                      <span className="mr-1.5" aria-hidden="true">🕹️</span>
+                      Mando virtual para probar
+                    </p>
+                    <p className="mt-0.5 text-xs text-slate-500">
+                      Permite moverse sin caminar. Apágalo para jugar por la calle.
+                    </p>
+                  </div>
+                  <CleanSwitch
+                    checked={draft.modifiers.testJoystickEnabled ?? true}
+                    ariaLabel="Alternar joystick de prueba"
+                    onToggle={() =>
+                      setDraft((prev) => ({
+                        ...prev,
+                        modifiers: {
+                          ...prev.modifiers,
+                          testJoystickEnabled: !(prev.modifiers.testJoystickEnabled ?? true),
+                        },
+                      }))
+                    }
+                  />
+                </div>
+                {(draft.modifiers.testJoystickEnabled ?? true) && (
+                  <div className="border-t border-slate-200/70 pt-3 flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs font-medium text-slate-700">
+                      Velocidad inicial
+                    </span>
+                    <div className="inline-flex rounded-xl bg-white p-1 border border-slate-200">
+                      {(
+                        [
+                          { id: 'walk', label: '1x' },
+                          { id: 'run', label: '3x' },
+                          { id: 'fast', label: '8x' },
+                        ] as const
+                      ).map((opt) => {
+                        const active =
+                          (draft.modifiers.testJoystickDefaultSpeed ?? 'run') === opt.id;
+                        return (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            onClick={() =>
+                              setDraft((prev) => ({
+                                ...prev,
+                                modifiers: {
+                                  ...prev.modifiers,
+                                  testJoystickDefaultSpeed: opt.id,
+                                },
+                              }))
+                            }
+                            className={`min-h-[34px] rounded-lg px-3 font-mono text-xs font-semibold transition-colors ${
+                              active
+                                ? 'bg-emerald-600 text-white'
+                                : 'text-slate-600 hover:text-slate-900'
+                            }`}
+                          >
+                            {opt.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* Barra de acción inferior */}
-      <div className="flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-between">
+      {/* Pie simple */}
+      <div className="flex flex-col-reverse gap-3 border-t border-slate-100 bg-slate-50/70 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6">
         {onCloseRoom ? (
           <button
             type="button"
             onClick={onCloseRoom}
             disabled={isSaving}
-            className="inline-flex min-h-[48px] items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-semibold text-rose-700 transition-colors hover:bg-rose-50 disabled:opacity-50 whitespace-nowrap"
+            className="self-start text-xs font-semibold text-rose-600 hover:text-rose-700 disabled:opacity-50"
           >
-            <LogOut className="h-4 w-4" aria-hidden="true" />
-            <span>Cerrar y borrar sala</span>
+            Cerrar y borrar sala
           </button>
         ) : (
           <div />
         )}
 
-        <div className="flex flex-col-reverse gap-3 sm:flex-row sm:items-center">
+        <div className="flex flex-col-reverse gap-2.5 sm:flex-row sm:items-center">
           {onCancel && (
             <button
               type="button"
               onClick={onCancel}
               disabled={isSaving}
-              className="min-h-[48px] rounded-xl border border-slate-300 bg-white px-6 py-3 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-50 disabled:opacity-50 whitespace-nowrap"
+              className="min-h-[44px] rounded-xl border border-slate-200 bg-white px-5 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50 whitespace-nowrap"
             >
-              Ir a la sala
+              Volver
             </button>
           )}
           <button
             type="submit"
             disabled={isSaving}
-            className="inline-flex min-h-[48px] items-center justify-center gap-2 rounded-xl bg-emerald-700 px-6 py-3 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-emerald-800 disabled:opacity-60 whitespace-nowrap"
+            className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl bg-emerald-600 px-5 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-60 whitespace-nowrap"
           >
             <Save className="h-4 w-4" aria-hidden="true" />
             <span>{isSaving ? 'Guardando...' : submitLabel}</span>

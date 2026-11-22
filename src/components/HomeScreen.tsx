@@ -1,5 +1,5 @@
-import React, { useEffect, useRef, useState } from 'react';
-import { ArrowRight, KeyRound, PlusCircle, Users } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { ArrowRight, Plus } from 'lucide-react';
 import { sanitizeRoomCode } from '../lib/storage';
 import { PlayerProfile } from '../types/game';
 import { ProfileCustomizer } from './ProfileCustomizer';
@@ -25,14 +25,11 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   joinError,
   onClearJoinError,
 }) => {
-  const [showJoinInput, setShowJoinInput] = useState(Boolean(initialJoinCode));
-  const [roomCode, setRoomCode] = useState(() => sanitizeRoomCode(initialJoinCode));
+  const [roomCode, setRoomCode] = useState(initialJoinCode);
   const [nameError, setNameError] = useState<string | null>(null);
-  const codeInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (initialJoinCode) {
-      setShowJoinInput(true);
       setRoomCode(sanitizeRoomCode(initialJoinCode));
     }
   }, [initialJoinCode]);
@@ -40,7 +37,7 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   const validateName = (): boolean => {
     const trimmed = profile.name.trim();
     if (trimmed.length < 2) {
-      setNameError('Escribe un nombre de al menos 2 caracteres.');
+      setNameError('Escribe un nombre de al menos 2 letras.');
       document.getElementById('player-name-input')?.focus();
       return false;
     }
@@ -53,14 +50,6 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
     await onCreateRoom();
   };
 
-  const handleOpenJoin = () => {
-    setShowJoinInput(true);
-    onClearJoinError();
-    setTimeout(() => {
-      codeInputRef.current?.focus();
-    }, 50);
-  };
-
   const handleJoinSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!validateName()) return;
@@ -68,169 +57,118 @@ export const HomeScreen: React.FC<HomeScreenProps> = ({
   };
 
   return (
-    <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-12 lg:gap-x-10 lg:gap-y-6">
-      {/* 1. Cabecera del juego */}
-      <section className="order-1 space-y-3 lg:col-span-6 lg:col-start-1 lg:row-start-1">
-        <div className="flex items-center gap-3">
-          <div className="inline-flex items-center gap-1.5 text-3xl sm:text-4xl" aria-hidden="true">
-            <span>📍</span>
-            <span>🏃‍♂️</span>
+    <div className="mx-auto max-w-4xl py-2 sm:py-6">
+      <div className="grid grid-cols-1 items-center gap-8 lg:grid-cols-12 lg:gap-12">
+        {/* Tarjeta principal de juego (primero en móvil) */}
+        <section className="clean-card p-5 sm:p-7 space-y-6 lg:col-span-7 lg:order-last">
+          <div className="space-y-1">
+            <h1 className="font-display text-2xl sm:text-3xl font-bold tracking-tight text-slate-900">
+              Jugar ahora
+            </h1>
+            <p className="text-sm text-slate-500">
+              Elige tu nombre y crea una sala nueva o entra con el código de tus amigos.
+            </p>
           </div>
-          <h1 className="font-display text-3xl font-bold tracking-tight text-slate-900 sm:text-5xl text-balance leading-[1.08]">
-            Baliza
-          </h1>
-        </div>
 
-        <p className="max-w-xl text-sm sm:text-base text-slate-600 leading-relaxed">
-          Convierte tu ciudad en el tablero. Crea una sala en segundos, dibuja las zonas de cierre
-          en el mapa con tu grupo y coordina la partida desde el móvil sin cuentas ni descargas.
-        </p>
+          <ProfileCustomizer
+            profile={profile}
+            onChange={(next) => {
+              if (nameError && next.name.trim().length >= 2) {
+                setNameError(null);
+              }
+              onProfileChange(next);
+            }}
+            nameError={nameError}
+          />
 
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs font-medium text-slate-500">
-          <span>Zonas en mapa</span>
-          <span aria-hidden="true">·</span>
-          <span>Sin cuentas</span>
-          <span aria-hidden="true">·</span>
-          <span>Código de 4–6 caracteres</span>
-        </div>
-      </section>
+          <div className="space-y-4 border-t border-slate-100 pt-5">
+            <button
+              type="button"
+              onClick={handleCreate}
+              disabled={isBusy}
+              className="flex min-h-[48px] w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-5 py-3 text-base font-semibold text-white hover:bg-emerald-700 active:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-60 transition-colors"
+            >
+              <Plus className="h-5 w-5 shrink-0" aria-hidden="true" />
+              <span>{isBusy ? 'Creando sala...' : 'Crear sala nueva'}</span>
+            </button>
 
-      {/* 2. En móvil aparece antes de los botones para escribir nombre y elegir emoji rápido; en desktop ocupa la columna derecha */}
-      <section
-        aria-labelledby="profile-section-heading"
-        className="order-2 rounded-3xl border border-slate-200 bg-white p-5 sm:p-6 shadow-xs lg:col-span-6 lg:col-start-7 lg:row-start-1 lg:row-span-3"
-      >
-        <div className="mb-5 flex items-center justify-between gap-2">
-          <h2
-            id="profile-section-heading"
-            className="font-display text-lg font-bold text-slate-900"
-          >
-            Tu perfil de jugador
-          </h2>
-          <Users className="h-5 w-5 text-slate-400" aria-hidden="true" />
-        </div>
-
-        <ProfileCustomizer
-          profile={profile}
-          onChange={(next) => {
-            if (nameError && next.name.trim().length >= 2) {
-              setNameError(null);
-            }
-            onProfileChange(next);
-          }}
-          nameError={nameError}
-        />
-      </section>
-
-      {/* 3. Tarjeta de acciones de entrada (Crear sala / Unirse) */}
-      <section className="order-3 rounded-3xl border border-slate-200 bg-white p-5 sm:p-6 shadow-xs space-y-4 lg:col-span-6 lg:col-start-1 lg:row-start-2">
-        <button
-          type="button"
-          onClick={handleCreate}
-          disabled={isBusy}
-          className="flex w-full min-h-[52px] items-center justify-center gap-2.5 rounded-2xl bg-emerald-700 px-6 py-3.5 text-base font-semibold text-white shadow-sm transition-colors hover:bg-emerald-800 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          <PlusCircle className="h-5 w-5" aria-hidden="true" />
-          <span>{isBusy ? 'Preparando sala...' : 'Crear sala'}</span>
-        </button>
-
-        {!showJoinInput ? (
-          <button
-            type="button"
-            onClick={handleOpenJoin}
-            disabled={isBusy}
-            className="flex w-full min-h-[52px] items-center justify-center gap-2.5 rounded-2xl border border-slate-300 bg-white px-6 py-3.5 text-base font-semibold text-slate-900 transition-colors hover:bg-slate-50 active:scale-[0.99] disabled:opacity-60"
-          >
-            <KeyRound className="h-5 w-5 text-slate-600" aria-hidden="true" />
-            <span>Unirse con código</span>
-          </button>
-        ) : (
-          <form
-            onSubmit={handleJoinSubmit}
-            className="space-y-3 border-t border-slate-200 pt-4"
-          >
-            <div className="flex items-center justify-between gap-2">
-              <label
-                htmlFor="room-code-input"
-                className="text-sm font-semibold text-slate-900"
-              >
-                Código de sala (4–6 caracteres)
-              </label>
-              <button
-                type="button"
-                onClick={() => {
-                  setShowJoinInput(false);
-                  onClearJoinError();
-                }}
-                className="min-h-[36px] px-2 text-xs font-medium text-slate-500 hover:text-slate-900"
-              >
-                Cancelar
-              </button>
+            <div className="relative flex items-center py-0.5">
+              <div className="flex-grow border-t border-slate-200" />
+              <span className="mx-3 shrink-0 text-xs font-medium text-slate-400">
+                o entrar con código
+              </span>
+              <div className="flex-grow border-t border-slate-200" />
             </div>
 
-            <div className="flex gap-2">
-              <input
-                ref={codeInputRef}
-                id="room-code-input"
-                type="text"
-                inputMode="text"
-                autoCapitalize="characters"
-                autoComplete="off"
-                maxLength={6}
-                placeholder="K7X2"
-                value={roomCode}
-                onChange={(e) => {
-                  onClearJoinError();
-                  setRoomCode(sanitizeRoomCode(e.target.value));
-                }}
-                className="min-h-[52px] w-full flex-1 rounded-2xl border border-slate-300 bg-slate-50 px-4 text-center font-mono text-2xl font-bold tracking-[0.25em] text-slate-900 uppercase placeholder:text-slate-300 focus:border-slate-900 focus:bg-white focus:outline-none focus:ring-2 focus:ring-slate-900/15"
-              />
-              <button
-                type="submit"
-                disabled={isBusy || roomCode.length < 4}
-                className="inline-flex min-h-[52px] items-center justify-center gap-2 rounded-2xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-45 whitespace-nowrap shrink-0"
-              >
-                <span>Entrar</span>
-                <ArrowRight className="h-4 w-4" aria-hidden="true" />
-              </button>
-            </div>
+            <form onSubmit={handleJoinSubmit} className="space-y-2">
+              <div className="flex gap-2">
+                <input
+                  id="room-code-input"
+                  type="text"
+                  inputMode="text"
+                  autoCapitalize="characters"
+                  autoComplete="off"
+                  maxLength={6}
+                  placeholder="Código (ej. K7X2)"
+                  aria-label="Código de la sala"
+                  value={roomCode}
+                  onChange={(e) => {
+                    onClearJoinError();
+                    setRoomCode(sanitizeRoomCode(e.target.value));
+                  }}
+                  className="h-12 w-full flex-1 rounded-xl border border-slate-300 bg-white px-4 text-center font-mono text-lg font-bold tracking-[0.2em] text-slate-900 uppercase placeholder:font-sans placeholder:text-sm placeholder:font-normal placeholder:tracking-normal placeholder:normal-case placeholder:text-slate-400 focus:border-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/10"
+                />
+                <button
+                  type="submit"
+                  disabled={isBusy || roomCode.length < 4}
+                  className="inline-flex h-12 items-center justify-center gap-1.5 rounded-xl bg-slate-900 px-5 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40 transition-colors whitespace-nowrap shrink-0"
+                >
+                  <span>Entrar</span>
+                  <ArrowRight className="h-4 w-4" aria-hidden="true" />
+                </button>
+              </div>
+              {joinError && (
+                <p role="alert" className="text-xs font-semibold text-rose-600">
+                  {joinError}
+                </p>
+              )}
+            </form>
+          </div>
+        </section>
 
-            {joinError && (
-              <p
-                role="alert"
-                className="rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2.5 text-sm font-medium text-rose-800"
-              >
-                {joinError}
+        {/* Explicación sencilla en 3 líneas (sin cajas ni ruido) */}
+        <div className="space-y-6 lg:col-span-5">
+          <div className="space-y-2">
+            <h2 className="font-display text-2xl sm:text-3xl font-bold tracking-tight text-slate-900 text-balance">
+              Escondite en el mapa con tus amigos
+            </h2>
+            <p className="text-sm sm:text-base text-slate-600 leading-relaxed">
+              Sin cuentas ni contraseñas. Todo el grupo usa el GPS del móvil dentro de una zona segura que se va cerrando.
+            </p>
+          </div>
+
+          <ol className="space-y-4 border-t border-slate-200 pt-5 text-sm">
+            <li>
+              <p className="font-semibold text-slate-900">1. Corre y escóndete</p>
+              <p className="mt-0.5 text-slate-500">
+                Los fugitivos aprovechan los primeros segundos para alejarse sin salir del círculo seguro.
               </p>
-            )}
-          </form>
-        )}
-      </section>
-
-      {/* 4. Cómo funciona en 3 pasos claros */}
-      <section className="order-4 grid grid-cols-1 gap-3 sm:grid-cols-3 lg:col-span-6 lg:col-start-1 lg:row-start-3">
-        <div className="rounded-2xl border border-slate-200 bg-white/80 p-4">
-          <p className="font-mono text-xs font-bold text-emerald-700">01</p>
-          <p className="mt-1 text-sm font-semibold text-slate-900">Tu perfil</p>
-          <p className="mt-0.5 text-xs text-slate-600 leading-relaxed">
-            Elige nombre, emoji y color. Se guarda solo en tu móvil.
-          </p>
+            </li>
+            <li>
+              <p className="font-semibold text-slate-900">2. Busca y atrapa</p>
+              <p className="mt-0.5 text-slate-500">
+                Los buscadores salen después y marcan en el móvil a quien encuentren.
+              </p>
+            </li>
+            <li>
+              <p className="font-semibold text-slate-900">3. Gana la ronda</p>
+              <p className="mt-0.5 text-slate-500">
+                Los fugitivos ganan si aguantan el tiempo o llegan a la Baliza verde; los buscadores si cazan a todos.
+              </p>
+            </li>
+          </ol>
         </div>
-        <div className="rounded-2xl border border-slate-200 bg-white/80 p-4">
-          <p className="font-mono text-xs font-bold text-emerald-700">02</p>
-          <p className="mt-1 text-sm font-semibold text-slate-900">Reglas en vivo</p>
-          <p className="mt-0.5 text-xs text-slate-600 leading-relaxed">
-            El anfitrión define duración, zonas vetadas y modificadores.
-          </p>
-        </div>
-        <div className="rounded-2xl border border-slate-200 bg-white/80 p-4">
-          <p className="font-mono text-xs font-bold text-emerald-700">03</p>
-          <p className="mt-1 text-sm font-semibold text-slate-900">Lobby grupal</p>
-          <p className="mt-0.5 text-xs text-slate-600 leading-relaxed">
-            Comparte el código y mira quién entra al instante.
-          </p>
-        </div>
-      </section>
+      </div>
     </div>
   );
 };

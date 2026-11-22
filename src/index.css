@@ -6,10 +6,56 @@
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
 }
 
+:root {
+  --app-bg: #f8fafc;
+  --app-card: #ffffff;
+  --app-subtle: #f1f5f9;
+  --app-border: #e2e8f0;
+  --app-text: #0f172a;
+  --app-muted: #64748b;
+}
+
+:root[data-font="rounded"] {
+  --font-sans: "Nunito", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Nunito", ui-sans-serif, system-ui, sans-serif;
+}
+
+:root[data-font="mono"] {
+  --font-sans: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  --font-display: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+:root[data-font="serif"] {
+  --font-sans: "Lora", ui-serif, Georgia, serif;
+  --font-display: "Lora", ui-serif, Georgia, serif;
+}
+
+:root[data-theme="warm"] {
+  --app-bg: #faf6ee;
+  --app-card: #fffdf9;
+  --app-subtle: #f2ece0;
+  --app-border: #e5dccb;
+  --app-text: #1c1917;
+  --app-muted: #78716c;
+}
+
+:root[data-theme="dark"] {
+  --app-bg: #0b1120;
+  --app-card: #111827;
+  --app-subtle: #1e293b;
+  --app-border: #263244;
+  --app-text: #f1f5f9;
+  --app-muted: #94a3b8;
+  color-scheme: dark;
+}
+
 @layer base {
-  html {
+  html,
+  body {
     font-family: var(--font-sans);
     scroll-behavior: smooth;
+    background-color: var(--app-bg);
+    color: var(--app-text);
   }
 
   h1, h2, h3, .font-display {
@@ -17,13 +63,134 @@
   }
 }
 
-.urban-grid-bg {
-  background-image:
-    linear-gradient(to right, rgba(15, 23, 42, 0.04) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(15, 23, 42, 0.04) 1px, transparent 1px);
-  background-size: 28px 28px;
+/* Superficies limpias y minimalistas */
+.clean-card {
+  background-color: var(--app-card);
+  border: 1px solid var(--app-border);
+  border-radius: 1rem;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+/* Adaptación limpia de tema Crema y Oscuro para la interfaz general */
+:root[data-theme="warm"] .bg-\[\#F8FAFC\] {
+  background-color: var(--app-bg) !important;
+}
+
+:root[data-theme="dark"] .bg-\[\#F8FAFC\],
+:root[data-theme="dark"] .bg-slate-100 {
+  background-color: var(--app-bg) !important;
+}
+
+:root[data-theme="dark"] .bg-white,
+:root[data-theme="dark"] .bg-white\/95,
+:root[data-theme="dark"] .bg-white\/90 {
+  background-color: var(--app-card) !important;
+}
+
+:root[data-theme="dark"] .bg-slate-50,
+:root[data-theme="dark"] .bg-slate-50\/70,
+:root[data-theme="dark"] .bg-slate-50\/60 {
+  background-color: var(--app-subtle) !important;
+}
+
+:root[data-theme="dark"] .border-slate-200,
+:root[data-theme="dark"] .border-slate-100,
+:root[data-theme="dark"] .divide-slate-100 > :not(:last-child) {
+  border-color: var(--app-border) !important;
+}
+
+:root[data-theme="dark"] .text-slate-900,
+:root[data-theme="dark"] .text-slate-800 {
+  color: var(--app-text) !important;
+}
+
+:root[data-theme="dark"] .text-slate-700 {
+  color: #cbd5e1 !important;
+}
+
+:root[data-theme="dark"] .text-slate-600,
+:root[data-theme="dark"] .text-slate-500,
+:root[data-theme="dark"] .text-slate-400 {
+  color: var(--app-muted) !important;
+}
+
+:root[data-theme="dark"] input,
+:root[data-theme="dark"] select {
+  background-color: var(--app-subtle);
+  color: var(--app-text);
+  border-color: var(--app-border);
+}
+
+:root[data-reduce-motion="true"] *,
+:root[data-reduce-motion="true"] *::before,
+:root[data-reduce-motion="true"] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+}
+
+/* Efectos preservados exclusivamente para las cinemáticas (Elimination, Roulette, Verdict, Kicked) */
+.dr-scanlines {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.035) 0px,
+    rgba(255, 255, 255, 0.035) 1px,
+    transparent 1px,
+    transparent 4px
+  );
+}
+
+.dr-halftone {
+  background-image: radial-gradient(rgba(255, 255, 255, 0.14) 1px, transparent 1px);
+  background-size: 8px 8px;
+}
+
+@keyframes dr-slam-in {
+  0% {
+    opacity: 0;
+    transform: scale(1.32) skewX(-8deg);
+  }
+  65% {
+    opacity: 1;
+    transform: scale(0.96) skewX(-4deg);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) skewX(0deg);
+  }
+}
+
+.dr-slam-in {
+  animation: dr-slam-in 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes dr-tape-scroll {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+.dr-tape-track {
+  display: flex;
+  width: max-content;
+  animation: dr-tape-scroll 9s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dr-slam-in,
+  .dr-tape-track {
+    animation: none;
+  }
+}
+
+.pixelated {
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
 }
 
 .pb-safe {
-  padding-bottom: max(1rem, env(safe-area-inset-bottom));
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
 }

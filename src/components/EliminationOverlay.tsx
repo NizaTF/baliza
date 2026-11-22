@@ -1,20 +1,17 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { RotateCcw, Volume2, X } from 'lucide-react';
-import {
-  playElimination8BitTheme,
-  unlockRetroAudio,
-} from '../lib/retroAudio';
+import { Volume2, X } from 'lucide-react';
+import { playElimination8BitTheme, unlockRetroAudio } from '../lib/retroAudio';
 
 interface EliminationOverlayProps {
   playerName: string;
   playerEmoji: string;
   playerColor: string;
   causeLabel: string;
+  autoCloseAfterDone?: boolean;
   onClose: () => void;
 }
 
-// Matriz pixel-art 5x7 para "ELIMINADO" en 8-bit auténtico
-const PIXEL_FONT_5X7: Record<string, string[]> = {
+const PIXEL_FONT: Record<string, string[]> = {
   E: ['11111', '10000', '10000', '11110', '10000', '10000', '11111'],
   L: ['10000', '10000', '10000', '10000', '10000', '10000', '11111'],
   I: ['11111', '00100', '00100', '00100', '00100', '00100', '11111'],
@@ -23,7 +20,32 @@ const PIXEL_FONT_5X7: Record<string, string[]> = {
   A: ['01110', '10001', '10001', '11111', '10001', '10001', '10001'],
   D: ['11110', '10001', '10001', '10001', '10001', '10001', '11110'],
   O: ['01110', '10001', '10001', '10001', '10001', '10001', '01110'],
+  U: ['10001', '10001', '10001', '10001', '10001', '10001', '01110'],
+  T: ['11111', '00100', '00100', '00100', '00100', '00100', '00100'],
 };
+
+/**
+ * Matriz 16x16 de la calavera negra pixel-art:
+ * '.' = transparente, 'W' = contorno blanco, 'K' = hueso negro (#09090B), 'P' = ojo magenta (#FF1E6E), 'E' = blanco ojo
+ */
+const SKULL_SPRITE_16: string[] = [
+  '....WWWWWWWW....',
+  '...WKKKKKKKKW...',
+  '..WKKKKKKKKKKW..',
+  '..WKKKKKKKKKKW..',
+  '..WKKEEEKKKEEW..',
+  '..WKKEPKKKEPKW..',
+  '..WKKEEEKKKEEW..',
+  '..WKKKKKKKKKKW..',
+  '...WKKKWWKKKW...',
+  '...WKKKKKKKKW...',
+  '....WKKKKKKW....',
+  '....WKWWKWKW....',
+  '....WKWWKWKW....',
+  '.....WWWWWW.....',
+  '................',
+  '................',
+];
 
 interface PixelCell {
   x: number;
@@ -73,7 +95,7 @@ function buildEmojiPixelSprite(emoji: string): {
       const idx = (y * gridSize + x) * 4;
       const a = imgData[idx + 3];
       if (a < 85) continue;
-      // Cuantización ligera 8-bit para colores más vivos y retro
+
       const r = Math.min(255, Math.round(imgData[idx] / 32) * 32);
       const g = Math.min(255, Math.round(imgData[idx + 1] / 32) * 32);
       const b = Math.min(255, Math.round(imgData[idx + 2] / 32) * 32);
@@ -85,56 +107,80 @@ function buildEmojiPixelSprite(emoji: string): {
   return { gridSize, pixels };
 }
 
+function buildPixelTextRects(
+  word: string
+): { width: number; height: number; rects: Array<{ x: number; y: number; key: string }> } {
+  const rects: Array<{ x: number; y: number; key: string }> = [];
+  let cursorX = 0;
+  for (let i = 0; i < word.length; i++) {
+    const ch = word[i];
+    const glyph = PIXEL_FONT[ch];
+    if (!glyph) {
+      cursorX += 4;
+      continue;
+    }
+    for (let row = 0; row < glyph.length; row++) {
+      for (let col = 0; col < glyph[row].length; col++) {
+        if (glyph[row][col] === '1') {
+          rects.push({
+            x: cursorX + col,
+            y: row,
+            key: `${i}-${row}-${col}`,
+          });
+        }
+      }
+    }
+    cursorX += 6;
+  }
+  return {
+    width: Math.max(1, cursorX - 1),
+    height: 7,
+    rects,
+  };
+}
+
 export const EliminationOverlay: React.FC<EliminationOverlayProps> = ({
   playerName,
   playerEmoji,
   playerColor,
   causeLabel,
+  autoCloseAfterDone = false,
   onClose,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const [replayCount, setReplayCount] = useState(0);
   const [audioBlocked, setAudioBlocked] = useState(false);
   const [sequenceDone, setSequenceDone] = useState(false);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
-  const bannerGlyphRects = useMemo(() => {
-    const word = 'ELIMINADO';
-    const rects: Array<{ x: number; y: number; key: string }> = [];
-    let offsetX = 0;
-    for (let i = 0; i < word.length; i++) {
-      const glyph = PIXEL_FONT_5X7[word[i]];
-      if (!glyph) continue;
-      for (let row = 0; row < glyph.length; row++) {
-        for (let col = 0; col < glyph[row].length; col++) {
-          if (glyph[row][col] === '1') {
-            rects.push({
-              x: offsetX + col,
-              y: row,
-              key: `${i}-${row}-${col}`,
-            });
-          }
-        }
-      }
-      offsetX += 6; // 5px ancho + 1px espacio
-    }
-    return {
-      width: offsetX - 1,
-      height: 7,
-      rects,
+  const bannerGlyphRects = useMemo(() => buildPixelTextRects('ELIMINADO'), []);
+
+  // Reproducir sintonía 8-bit sincronizada una sola vez
+  useEffect(() => {
+    setSequenceDone(false);
+    const playback = playElimination8BitTheme();
+    setAudioBlocked(playback.wasBlocked);
+
+    const doneTimer = window.setTimeout(() => {
+      setSequenceDone(true);
+    }, 3900);
+
+    return () => {
+      window.clearTimeout(doneTimer);
+      playback.stop();
     };
   }, []);
 
-  // Reproducir sintonía 8-bit de derrota
+  // Si la partida ya terminó con esta última eliminación, pasar automáticamente a Victoria/Derrota al acabar la animación
   useEffect(() => {
-    unlockRetroAudio();
-    const handle = playElimination8BitTheme();
-    setAudioBlocked(handle.wasBlocked);
-    return () => {
-      handle.stop();
-    };
-  }, [replayCount]);
+    if (!autoCloseAfterDone || !sequenceDone) return;
+    const t = window.setTimeout(() => {
+      onCloseRef.current();
+    }, 300);
+    return () => window.clearTimeout(t);
+  }, [autoCloseAfterDone, sequenceDone]);
 
-  // Animación 8-bit en canvas estilo ejecución Danganronpa
+  // Animación pixel-art 8-bit de eliminación en canvas 160x160 (transformación a calavera negra, SIN muerte ni ejecución)
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -144,66 +190,21 @@ export const EliminationOverlay: React.FC<EliminationOverlayProps> = ({
     const W = 160;
     const H = 160;
     const sprite = buildEmojiPixelSprite(playerEmoji);
-    const pxScale = 3; // 22 * 3 = 66px de alto/ancho por sprite
+    const pxScale = 3; // 22 * 3 = 66px
     const spriteW = sprite.gridSize * pxScale;
     const spriteBaseX = Math.floor((W - spriteW) / 2);
-    const spriteBaseY = Math.floor((H - spriteW) / 2) + 8;
+    const spriteBaseY = 48;
+
+    const particles: PixelParticle[] = [];
+    let burstSpawned = false;
 
     const prefersReducedMotion =
       typeof window !== 'undefined' &&
       window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 
-    let particles: PixelParticle[] = [];
-    let burstSpawned = false;
-    let rafId = 0;
     const startMs = performance.now();
-    let lastFrameMs = startMs;
-    setSequenceDone(false);
-
-    const spawnBurst = () => {
-      if (burstSpawned) return;
-      burstSpawned = true;
-      const palette = ['#FF1E6E', '#FF1E6E', '#FFFFFF', '#00E5FF', playerColor];
-      const nextParticles: PixelParticle[] = [];
-
-      // Píxeles arrancados directamente del emoji + bloques magenta estilo Danganronpa
-      const sampleStep = Math.max(1, Math.floor(sprite.pixels.length / 36));
-      for (let i = 0; i < sprite.pixels.length; i += sampleStep) {
-        const cell = sprite.pixels[i];
-        const angle = Math.random() * Math.PI * 2;
-        const speed = 45 + Math.random() * 115;
-        nextParticles.push({
-          x: spriteBaseX + cell.x * pxScale,
-          y: spriteBaseY + cell.y * pxScale,
-          vx: Math.cos(angle) * speed,
-          vy: Math.sin(angle) * speed - 45,
-          size: Math.random() > 0.4 ? 3 : 4,
-          color:
-            Math.random() > 0.35
-              ? '#FF1E6E'
-              : `rgb(${cell.r}, ${cell.g}, ${cell.b})`,
-          life: 0,
-          maxLife: 1.2 + Math.random() * 0.9,
-        });
-      }
-
-      for (let k = 0; k < 22; k++) {
-        const angle = Math.random() * Math.PI * 2;
-        const speed = 35 + Math.random() * 130;
-        nextParticles.push({
-          x: W / 2 + (Math.random() * 16 - 8),
-          y: spriteBaseY + spriteW / 2 + (Math.random() * 16 - 8),
-          vx: Math.cos(angle) * speed,
-          vy: Math.sin(angle) * speed - 60,
-          size: Math.random() > 0.5 ? 3 : 2,
-          color: palette[k % palette.length],
-          life: 0,
-          maxLife: 1.0 + Math.random() * 1.1,
-        });
-      }
-
-      particles = nextParticles;
-    };
+    let lastMs = startMs;
+    let rafId = 0;
 
     const drawPixelRect = (
       x: number,
@@ -216,41 +217,93 @@ export const EliminationOverlay: React.FC<EliminationOverlayProps> = ({
       ctx.fillRect(Math.round(x), Math.round(y), Math.round(w), Math.round(h));
     };
 
-    const renderFrame = (nowMs: number) => {
-      const dt = Math.min(0.05, (nowMs - lastFrameMs) / 1000);
-      lastFrameMs = nowMs;
-      const elapsedSec = prefersReducedMotion ? 3.5 : (nowMs - startMs) / 1000;
-
-      if (elapsedSec >= 2.6) {
-        setSequenceDone(true);
+    const spawnBurst = () => {
+      if (burstSpawned) return;
+      burstSpawned = true;
+      const palette = ['#FF1E6E', '#FFFFFF', '#A1A1AA', '#09090B', playerColor];
+      for (let i = 0; i < 64; i++) {
+        const angle = (Math.PI * 2 * i) / 64 + (Math.random() - 0.5) * 0.25;
+        const speed = 38 + Math.random() * 115;
+        particles.push({
+          x: W / 2 + (Math.random() - 0.5) * 16,
+          y: spriteBaseY + spriteW / 2 + (Math.random() - 0.5) * 16,
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed - 30,
+          size: Math.random() > 0.45 ? 3 : 2,
+          color: palette[i % palette.length],
+          life: 0,
+          maxLife: 1.0 + Math.random() * 1.1,
+        });
       }
+    };
+
+    const drawBlackSkullSprite = (cx: number, cy: number, scale: number) => {
+      const size = 16 * scale;
+      const startX = Math.floor(cx - size / 2);
+      const startY = Math.floor(cy - size / 2);
+
+      // Marco negro de emblema eliminado con borde magenta/blanco
+      drawPixelRect(startX - 6, startY - 6, size + 12, size + 12, '#000000');
+      drawPixelRect(startX - 6, startY - 6, size + 12, 2, '#FF1E6E');
+      drawPixelRect(startX - 6, startY + size + 4, size + 12, 2, '#FF1E6E');
+      drawPixelRect(startX - 6, startY - 6, 2, size + 12, '#FF1E6E');
+      drawPixelRect(startX + size + 4, startY - 6, 2, size + 12, '#FF1E6E');
+
+      for (let row = 0; row < SKULL_SPRITE_16.length; row++) {
+        const line = SKULL_SPRITE_16[row];
+        for (let col = 0; col < line.length; col++) {
+          const ch = line[col];
+          if (ch === '.') continue;
+          const color =
+            ch === 'W'
+              ? '#F4F4F5'
+              : ch === 'K'
+              ? '#09090B'
+              : ch === 'P'
+              ? '#FF1E6E'
+              : '#FFFFFF';
+          drawPixelRect(
+            startX + col * scale,
+            startY + row * scale,
+            scale,
+            scale,
+            color
+          );
+        }
+      }
+    };
+
+    const renderFrame = (nowMs: number) => {
+      const dt = Math.min(0.05, Math.max(0.001, (nowMs - lastMs) / 1000));
+      lastMs = nowMs;
+      const elapsedSec = prefersReducedMotion ? 2.4 : (nowMs - startMs) / 1000;
 
       // 1. Fondo negro puro
-      ctx.fillStyle = '#000000';
-      ctx.fillRect(0, 0, W, H);
+      drawPixelRect(0, 0, W, H, '#000000');
 
-      // 2. Bandas diagonales/pixeladas Danganronpa arriba y abajo
-      const stripeShift = Math.floor(elapsedSec * 28) % 12;
-      for (let x = -12; x < W + 12; x += 12) {
-        drawPixelRect(x + stripeShift, 4, 6, 4, '#FF1E6E');
-        drawPixelRect(x - stripeShift, H - 8, 6, 4, '#FF1E6E');
+      // 2. Cuadrícula pixelada tenue en el fondo negro
+      ctx.fillStyle = 'rgba(255, 30, 110, 0.08)';
+      for (let gx = 0; gx < W; gx += 16) {
+        ctx.fillRect(gx, 0, 1, H);
+      }
+      for (let gy = 0; gy < H; gy += 16) {
+        ctx.fillRect(0, gy, W, 1);
       }
 
-      // 3. Foco de escenario pixelado (spotlight)
+      // 3. Foco cenital pixelado en el escenario
       const spotProgress = Math.min(1, elapsedSec / 0.35);
       if (spotProgress > 0) {
-        const topHalf = Math.floor(14 * spotProgress);
-        const botHalf = Math.floor(42 * spotProgress);
+        const topHalf = Math.floor(16 * spotProgress);
+        const botHalf = Math.floor(46 * spotProgress);
         for (let row = 12; row < 134; row += 2) {
           const t = (row - 12) / (134 - 12);
           const halfW = Math.round(topHalf + (botHalf - topHalf) * t);
           ctx.fillStyle =
-            elapsedSec >= 1.76 && elapsedSec < 1.9
-              ? 'rgba(255, 30, 110, 0.28)'
-              : 'rgba(255, 255, 255, 0.08)';
+            elapsedSec >= 1.76 && elapsedSec < 1.92
+              ? 'rgba(255, 30, 110, 0.30)'
+              : 'rgba(255, 255, 255, 0.07)';
           ctx.fillRect(Math.floor(W / 2 - halfW), row, halfW * 2, 2);
         }
-        // Suelo circular pixelado
         drawPixelRect(W / 2 - botHalf, 132, botHalf * 2, 4, '#27272A');
         drawPixelRect(
           W / 2 - botHalf + 6,
@@ -261,143 +314,151 @@ export const EliminationOverlay: React.FC<EliminationOverlayProps> = ({
         );
       }
 
-      // 4. Posición y temblor del personaje pixelado
-      const isStruck = elapsedSec >= 1.76;
-      const panicShakeX =
-        !isStruck && elapsedSec >= 0.45
-          ? Math.round(Math.sin(elapsedSec * 52) * 2)
-          : isStruck && elapsedSec < 2.05
-          ? Math.round(Math.sin(elapsedSec * 90) * 3)
+      const isTransformed = elapsedSec >= 1.76;
+
+      // 4. Rebote inicial del emoji pixelado antes del escaneo -> temblor digital durante escaneo
+      const bounceOffsetY =
+        elapsedSec < 0.48
+          ? -Math.abs(Math.round(Math.sin(elapsedSec * 12) * 5))
           : 0;
-      const panicShakeY =
-        isStruck && elapsedSec < 2.05
-          ? Math.round(Math.cos(elapsedSec * 80) * 2)
+      const scanShakeX =
+        !isTransformed && elapsedSec >= 0.48
+          ? Math.round(Math.sin(elapsedSec * 56) * 2)
+          : isTransformed && elapsedSec < 2.02
+          ? Math.round(Math.sin(elapsedSec * 85) * 3)
+          : 0;
+      const scanShakeY =
+        isTransformed && elapsedSec < 2.02
+          ? Math.round(Math.cos(elapsedSec * 75) * 2)
           : 0;
 
-      const drawX = spriteBaseX + panicShakeX;
-      const drawY = spriteBaseY + panicShakeY;
+      const drawX = spriteBaseX + scanShakeX;
+      const drawY = spriteBaseY + bounceOffsetY + scanShakeY;
 
       // Sombra pixelada en el suelo
-      drawPixelRect(drawX + 12, spriteBaseY + spriteW - 2, spriteW - 24, 4, '#09090B');
+      drawPixelRect(drawX + 12, 130, spriteW - 24, 3, '#18181B');
 
-      // Dibujar personaje pixelado (color antes del golpe, gris derrotado después)
-      if (sprite.pixels.length > 0) {
-        for (let i = 0; i < sprite.pixels.length; i++) {
-          const cell = sprite.pixels[i];
-          if (isStruck) {
-            // Tono monocromo sombrío con ligero tinte magenta en bordes
-            const v = Math.max(45, Math.min(200, cell.gray));
-            ctx.fillStyle = `rgb(${Math.min(255, v + 12)}, ${Math.max(
-              30,
-              v - 10
-            )}, ${v})`;
-          } else {
-            ctx.fillStyle = `rgb(${cell.r}, ${cell.g}, ${cell.b})`;
+      if (!isTransformed) {
+        // Dibujar el emoji pixelado del jugador
+        if (sprite.pixels.length > 0) {
+          for (let i = 0; i < sprite.pixels.length; i++) {
+            const cell = sprite.pixels[i];
+            // Durante el escaneo (0.48 - 1.76), aplicar pulso blanco/magenta de desincronización
+            const scanY =
+              spriteBaseY +
+              (((elapsedSec - 0.48) * 95) % spriteW);
+            const nearBeam =
+              elapsedSec >= 0.48 &&
+              Math.abs(drawY + cell.y * pxScale - scanY) < 6;
+            ctx.fillStyle = nearBeam
+              ? '#FF1E6E'
+              : `rgb(${cell.r}, ${cell.g}, ${cell.b})`;
+            ctx.fillRect(
+              drawX + cell.x * pxScale,
+              drawY + cell.y * pxScale,
+              pxScale,
+              pxScale
+            );
           }
-          ctx.fillRect(
-            drawX + cell.x * pxScale,
-            drawY + cell.y * pxScale,
-            pxScale,
-            pxScale
-          );
+        } else {
+          drawPixelRect(drawX + 12, drawY + 12, 42, 42, playerColor);
+          drawPixelRect(drawX + 20, drawY + 24, 8, 8, '#FFFFFF');
+          drawPixelRect(drawX + 38, drawY + 24, 8, 8, '#FFFFFF');
+        }
+
+        // Retícula / esquinas de fijación estilo Danganronpa cerrándose sobre el emoji
+        if (elapsedSec >= 0.25) {
+          const lockT = Math.min(1, Math.max(0, (elapsedSec - 0.48) / 1.25));
+          const margin = Math.round(14 - lockT * 10);
+          const bx0 = drawX - margin;
+          const by0 = drawY - margin;
+          const bx1 = drawX + spriteW + margin;
+          const by1 = drawY + spriteW + margin;
+          const cornerLen = 9;
+          const bracketColor =
+            elapsedSec >= 0.48 && Math.floor(elapsedSec * 12) % 2 === 0
+              ? '#FF1E6E'
+              : '#FFFFFF';
+
+          // 4 esquinas pixeladas
+          drawPixelRect(bx0, by0, cornerLen, 2, bracketColor);
+          drawPixelRect(bx0, by0, 2, cornerLen, bracketColor);
+
+          drawPixelRect(bx1 - cornerLen, by0, cornerLen, 2, bracketColor);
+          drawPixelRect(bx1 - 2, by0, 2, cornerLen, bracketColor);
+
+          drawPixelRect(bx0, by1 - 2, cornerLen, 2, bracketColor);
+          drawPixelRect(bx0, by1 - cornerLen, 2, cornerLen, bracketColor);
+
+          drawPixelRect(bx1 - cornerLen, by1 - 2, cornerLen, 2, bracketColor);
+          drawPixelRect(bx1 - 2, by1 - cornerLen, 2, cornerLen, bracketColor);
+        }
+
+        // Haz horizontal de escaneo + icono de alerta "!" (eliminación digital, sin violencia)
+        if (elapsedSec >= 0.48) {
+          const beamY =
+            spriteBaseY + (((elapsedSec - 0.48) * 95) % spriteW);
+          drawPixelRect(drawX - 8, beamY, spriteW + 16, 2, '#FF1E6E');
+          drawPixelRect(drawX - 4, beamY - 1, spriteW + 8, 1, '#FFFFFF');
+
+          if (Math.floor(elapsedSec * 10) % 2 === 0) {
+            const ax = W / 2 - 7;
+            const ay = drawY - 18;
+            drawPixelRect(ax, ay, 14, 14, '#FF1E6E');
+            drawPixelRect(ax + 2, ay + 2, 10, 10, '#000000');
+            drawPixelRect(ax + 6, ay + 3, 2, 5, '#FFFFFF');
+            drawPixelRect(ax + 6, ay + 10, 2, 2, '#FFFFFF');
+          }
         }
       } else {
-        // Respaldo geométrico 8-bit por si el navegador no renderizó fuente emoji en canvas
-        drawPixelRect(drawX + 12, drawY + 12, 42, 42, isStruck ? '#52525B' : playerColor);
-        drawPixelRect(drawX + 20, drawY + 24, 8, 8, '#FFFFFF');
-        drawPixelRect(drawX + 38, drawY + 24, 8, 8, '#FFFFFF');
-      }
-
-      // 5. Burbuja de alerta pixelada "!" durante el pánico
-      if (elapsedSec >= 0.5 && elapsedSec < 1.76) {
-        const blink = Math.floor(elapsedSec * 10) % 2 === 0;
-        if (blink) {
-          const bx = W / 2 - 7;
-          const by = drawY - 18;
-          drawPixelRect(bx, by, 14, 14, '#FF1E6E');
-          drawPixelRect(bx + 2, by + 2, 10, 10, '#000000');
-          drawPixelRect(bx + 6, by + 3, 2, 5, '#FFFFFF');
-          drawPixelRect(bx + 6, by + 10, 2, 2, '#FFFFFF');
-        }
-      }
-
-      // 6. Cadena pixelada descendiendo desde arriba (estilo ejecución Danganronpa)
-      if (elapsedSec >= 0.72 && elapsedSec < 2.25) {
-        const dropProgress = Math.min(1, (elapsedSec - 0.72) / 1.0);
-        const chainBottomY = Math.floor(
-          10 + dropProgress * (spriteBaseY + 14 - 10)
-        );
-        const cx = Math.floor(W / 2);
-        for (let cy = 8; cy < chainBottomY; cy += 6) {
-          const linkFlip = Math.floor(cy / 6) % 2 === 0;
-          drawPixelRect(
-            cx - (linkFlip ? 3 : 2),
-            cy,
-            linkFlip ? 6 : 4,
-            5,
-            '#94A3B8'
-          );
-          drawPixelRect(cx - 1, cy + 1, 2, 3, '#000000');
-        }
-        // Garra / grillete pixelado en la punta
-        drawPixelRect(cx - 8, chainBottomY - 2, 16, 4, '#E2E8F0');
-        drawPixelRect(cx - 8, chainBottomY + 2, 4, 5, '#CBD5E1');
-        drawPixelRect(cx + 4, chainBottomY + 2, 4, 5, '#CBD5E1');
-      }
-
-      // 7. Impacto: flash + sello gigante pixelado ✕ + explosión de píxeles
-      if (isStruck) {
+        // 5. Transformación final: Explosión de píxeles + Calavera negra pixelada
         spawnBurst();
 
-        if (!prefersReducedMotion && elapsedSec >= 1.76 && elapsedSec < 1.86) {
+        if (!prefersReducedMotion && elapsedSec >= 1.76 && elapsedSec < 1.88) {
           ctx.fillStyle =
             Math.floor(elapsedSec * 60) % 2 === 0
               ? 'rgba(255, 255, 255, 0.85)'
-              : 'rgba(255, 30, 110, 0.7)';
+              : 'rgba(255, 30, 110, 0.72)';
           ctx.fillRect(0, 0, W, H);
         }
 
-        // Sello X pixelado sobre el personaje
-        const xThickness = 5;
-        const xRadius = 26;
-        const xCenter = W / 2;
-        const yCenter = spriteBaseY + Math.floor(spriteW / 2);
-        for (let d = -xRadius; d <= xRadius; d += 2) {
-          // Sombra oscura del trazo
-          drawPixelRect(
-            xCenter + d - 2,
-            yCenter + d - 2,
-            xThickness + 2,
-            xThickness + 2,
-            '#000000'
-          );
-          drawPixelRect(
-            xCenter + d - 2,
-            yCenter - d - 2,
-            xThickness + 2,
-            xThickness + 2,
-            '#000000'
+        // Onda expansiva cuadrada pixelada
+        const waveAge = elapsedSec - 1.76;
+        if (!prefersReducedMotion && waveAge < 0.45) {
+          const r = Math.floor(26 + waveAge * 130);
+          ctx.strokeStyle = '#FF1E6E';
+          ctx.lineWidth = 2;
+          ctx.strokeRect(
+            Math.floor(W / 2 - r),
+            Math.floor(spriteBaseY + spriteW / 2 - r),
+            r * 2,
+            r * 2
           );
         }
-        for (let d = -xRadius; d <= xRadius; d += 2) {
-          drawPixelRect(
-            xCenter + d - 2,
-            yCenter + d - 2,
-            xThickness,
-            xThickness,
-            '#FF1E6E'
-          );
-          drawPixelRect(
-            xCenter + d - 2,
-            yCenter - d - 2,
-            xThickness,
-            xThickness,
-            '#FF1E6E'
-          );
-        }
+
+        // Dibujar calavera negra pixel-art reemplazando el emoji del jugador
+        drawBlackSkullSprite(
+          W / 2 + scanShakeX,
+          spriteBaseY + Math.floor(spriteW / 2) + scanShakeY,
+          4
+        );
+
+        // Sello pixelado "OUT" debajo de la calavera
+        const badgeW = 44;
+        const badgeH = 14;
+        const badgeX = Math.floor(W / 2 - badgeW / 2);
+        const badgeY = 122;
+        drawPixelRect(badgeX, badgeY, badgeW, badgeH, '#FF1E6E');
+        drawPixelRect(badgeX + 2, badgeY + 2, badgeW - 4, badgeH - 4, '#000000');
+        const outWord = buildPixelTextRects('OUT');
+        const outStartX = Math.floor(W / 2 - outWord.width / 2);
+        const outStartY = badgeY + 3;
+        outWord.rects.forEach((r) => {
+          drawPixelRect(outStartX + r.x, outStartY + r.y, 1, 1, '#FFFFFF');
+        });
       }
 
-      // 8. Actualizar y dibujar partículas pixeladas
+      // 6. Partículas pixeladas en movimiento
       if (particles.length > 0) {
         for (let i = particles.length - 1; i >= 0; i--) {
           const pt = particles[i];
@@ -406,7 +467,7 @@ export const EliminationOverlay: React.FC<EliminationOverlayProps> = ({
             particles.splice(i, 1);
             continue;
           }
-          pt.vy += 260 * dt; // gravedad retro
+          pt.vy += 240 * dt;
           pt.x += pt.vx * dt;
           pt.y += pt.vy * dt;
           if (pt.y > 132) {
@@ -424,14 +485,15 @@ export const EliminationOverlay: React.FC<EliminationOverlayProps> = ({
     };
 
     rafId = window.requestAnimationFrame(renderFrame);
+
     return () => {
       window.cancelAnimationFrame(rafId);
     };
-  }, [playerEmoji, playerColor, replayCount]);
+  }, [playerEmoji, playerColor]);
 
-  const handleReplay = () => {
+  const handleEnableAudio = () => {
     unlockRetroAudio();
-    setReplayCount((c) => c + 1);
+    setAudioBlocked(false);
   };
 
   return (
@@ -439,13 +501,9 @@ export const EliminationOverlay: React.FC<EliminationOverlayProps> = ({
       role="dialog"
       aria-modal="true"
       aria-label="Has sido eliminado"
-      className="fixed inset-0 z-50 flex h-[100dvh] w-full flex-col items-center justify-between overflow-hidden bg-black px-4 py-6 text-white select-none"
-      style={{
-        backgroundImage:
-          'repeating-linear-gradient(to bottom, rgba(255,255,255,0.035) 0px, rgba(255,255,255,0.035) 1px, transparent 1px, transparent 4px)',
-      }}
+      className="fixed inset-0 z-50 flex h-[100dvh] w-full flex-col items-center justify-between overflow-hidden bg-black dr-scanlines px-4 py-6 text-white select-none"
     >
-      {/* CABECERA 8-BIT "ELIMINADO" */}
+      {/* CABECERA ARRIBA CON MENSAJE PIXELADO "ELIMINADO" */}
       <header className="flex w-full max-w-xl flex-col items-center gap-3 pt-2 sm:pt-4">
         <div className="w-full px-2 flex justify-center">
           <svg
@@ -457,7 +515,6 @@ export const EliminationOverlay: React.FC<EliminationOverlayProps> = ({
             role="img"
             aria-label="ELIMINADO"
           >
-            {/* Sombra magenta desplazada estilo Danganronpa 8-bit */}
             {bannerGlyphRects.rects.map((r) => (
               <rect
                 key={`s-${r.key}`}
@@ -468,7 +525,6 @@ export const EliminationOverlay: React.FC<EliminationOverlayProps> = ({
                 fill="#FF1E6E"
               />
             ))}
-            {/* Texto blanco pixelado */}
             {bannerGlyphRects.rects.map((r) => (
               <rect
                 key={r.key}
@@ -483,7 +539,7 @@ export const EliminationOverlay: React.FC<EliminationOverlayProps> = ({
         </div>
 
         <div className="text-center space-y-1">
-          <p className="font-mono text-xs sm:text-sm font-bold uppercase tracking-[0.22em] text-[#FF1E6E]">
+          <p className="font-display text-xs sm:text-sm font-bold uppercase tracking-wider text-[#FF1E6E]">
             {causeLabel}
           </p>
           <p className="font-mono text-xs text-zinc-400">
@@ -492,15 +548,14 @@ export const EliminationOverlay: React.FC<EliminationOverlayProps> = ({
         </div>
       </header>
 
-      {/* ESCENARIO CENTRAL CON PERSONAJE PIXELADO */}
+      {/* ESCENARIO CENTRAL CON FONDO NEGRO, EMOJI PIXELADO Y TRANSFORMACIÓN A CALAVERA NEGRA */}
       <main className="flex flex-1 flex-col items-center justify-center w-full max-w-md my-2">
-        <div className="relative flex items-center justify-center rounded-none border-2 border-[#FF1E6E]/70 bg-black p-1 shadow-[0_0_40px_rgba(255,30,110,0.22)]">
+        <div className="relative flex items-center justify-center border-2 border-[#FF1E6E] bg-black p-1 shadow-[6px_6px_0_0_#FF1E6E]">
           <canvas
             ref={canvasRef}
             width={160}
             height={160}
-            className="h-[260px] w-[260px] sm:h-[320px] sm:w-[320px] block bg-black"
-            style={{ imageRendering: 'pixelated' }}
+            className="h-[260px] w-[260px] sm:h-[320px] sm:w-[320px] block bg-black pixelated"
           />
         </div>
       </main>
@@ -510,33 +565,22 @@ export const EliminationOverlay: React.FC<EliminationOverlayProps> = ({
         {audioBlocked && (
           <button
             type="button"
-            onClick={handleReplay}
-            className="flex min-h-[44px] w-full items-center justify-center gap-2 border border-[#FF1E6E] bg-[#FF1E6E]/15 px-4 py-2 font-mono text-xs font-bold uppercase tracking-wider text-[#FF1E6E] hover:bg-[#FF1E6E]/25"
+            onClick={handleEnableAudio}
+            className="flex min-h-[44px] w-full items-center justify-center gap-2 border-2 border-[#FF1E6E] bg-[#FF1E6E]/20 px-4 py-2 font-display text-xs font-bold uppercase text-[#FF1E6E] hover:bg-[#FF1E6E]/30"
           >
             <Volume2 className="h-4 w-4" aria-hidden="true" />
-            <span>Activar sintonía 8-bit</span>
+            <span>Activar sonido</span>
           </button>
         )}
 
-        <div className="grid grid-cols-2 gap-2.5">
-          <button
-            type="button"
-            onClick={handleReplay}
-            className="flex min-h-[48px] items-center justify-center gap-2 border border-zinc-700 bg-zinc-950 px-4 py-2.5 font-mono text-xs font-bold uppercase tracking-wider text-zinc-200 hover:border-zinc-500 hover:bg-zinc-900"
-          >
-            <RotateCcw className="h-4 w-4" aria-hidden="true" />
-            <span>Repetir</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={onClose}
-            className="flex min-h-[48px] items-center justify-center gap-2 border border-white bg-white px-4 py-2.5 font-mono text-xs font-bold uppercase tracking-wider text-black hover:bg-zinc-200"
-          >
-            <X className="h-4 w-4" aria-hidden="true" />
-            <span>{sequenceDone ? 'Espectador' : 'Saltar'}</span>
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="flex min-h-[48px] w-full items-center justify-center gap-2 border-2 border-white bg-white px-4 py-2.5 font-display text-xs font-bold uppercase text-black dr-btn-shadow-pink hover:bg-zinc-200"
+        >
+          <X className="h-4 w-4" aria-hidden="true" />
+          <span>{sequenceDone ? 'Espectador' : 'Saltar'}</span>
+        </button>
       </footer>
     </div>
   );

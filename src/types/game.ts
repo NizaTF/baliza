@@ -4,8 +4,8 @@ export interface PlayerProfile {
   color: string;
 }
 
-export type RoundDuration = 10 | 20 | 30 | 45 | 60;
-export type SeekersCount = 1 | 2 | 3 | 'random';
+export type RoundDuration = number;
+export type SeekersCount = 'random' | number;
 export type RoleAssignment = 'manual' | 'random';
 export type PlayZone = 'free' | 'radius_500m' | 'radius_1km' | 'radius_2km';
 export type ZoneMode = 'manual' | 'random';
@@ -25,9 +25,47 @@ export interface ZonesConfig {
   zones: StormZonePhase[];
 }
 
+export type MatchWinner = 'seekers' | 'hiders';
+export type MatchWinReason = 'all_caught' | 'time_expired' | 'beacon_extracted';
+export type LocationGuardStatus = 'active' | 'disabled' | 'unsupported';
+
+export interface ExtractionBeacon {
+  lat: number;
+  lng: number;
+  radiusM: number;
+  unlockAtSec: number;
+  activatedByPlayerId?: string;
+  activatedAt?: string;
+}
+
 export interface CaughtRecord {
   at: string;
-  byPlayerId: string | 'storm';
+  byPlayerId: string | 'storm' | 'anticheat' | 'photo';
+}
+
+export interface PhotoSubmissionRecord {
+  at: string;
+  status: 'accepted' | 'rejected';
+}
+
+export interface PhotoChallengeState {
+  id: string;
+  startedAt: string;
+  expiresAt: string;
+  windowSec: number;
+  completedBy: Record<string, PhotoSubmissionRecord>;
+}
+
+export interface MatchPathPoint {
+  lat: number;
+  lng: number;
+  tSec: number;
+}
+
+export interface PlayerRecapRoute {
+  playerId: string;
+  points: MatchPathPoint[];
+  totalMeters: number;
 }
 
 export interface MatchState {
@@ -36,6 +74,14 @@ export interface MatchState {
   roles: Record<string, PlayerRole>;
   activeZones: StormZonePhase[];
   caught?: Record<string, CaughtRecord>;
+  rouletteDurationMs?: number;
+  seekerOrder?: string[];
+  hideTimeSec?: number;
+  extractionBeacon?: ExtractionBeacon | null;
+  photoChallenge?: PhotoChallengeState | null;
+  winner?: MatchWinner | null;
+  winReason?: MatchWinReason | null;
+  endedAt?: string | null;
 }
 
 export interface RoomModifiers {
@@ -46,6 +92,35 @@ export interface RoomModifiers {
   noChat: boolean;
   showCountdown: boolean;
   nightMode: boolean;
+  // Modificadores activos configurables en partida
+  classicModeEnabled?: boolean;
+  classicHintIntervalSec?: number;
+  classicHintsIncludeSeeker?: boolean;
+  beaconHoldSec?: number;
+  beaconRadiusM?: number;
+  hunterPhotoEnabled?: boolean;
+  hunterPhotoWindowSec?: number;
+  hunterPhotoDelaySec?: number;
+  fogEnabled?: boolean;
+  fogRadiusM?: number;
+  radarEnabled?: boolean;
+  radarIntervalSec?: number;
+  radarRangeM?: number;
+  trailEnabled?: boolean;
+  trailDurationSec?: number;
+  // Modificadores extra opcionales
+  stealthStillEnabled?: boolean;
+  stealthStillDelaySec?: number;
+  antiCampEnabled?: boolean;
+  antiCampLimitSec?: number;
+  antiCampRadiusM?: number;
+  hotColdEnabled?: boolean;
+  hotColdNearM?: number;
+  panicEndgameEnabled?: boolean;
+  panicWindowSec?: number;
+  panicPingIntervalSec?: number;
+  testJoystickEnabled?: boolean;
+  testJoystickDefaultSpeed?: 'walk' | 'run' | 'fast';
 }
 
 export interface PlayerLocationPayload {
@@ -56,6 +131,10 @@ export interface PlayerLocationPayload {
   inStorm: boolean;
   stormExposed: boolean;
   updatedAt: number;
+  locationStatus?: LocationGuardStatus;
+  locationDisabled?: boolean;
+  isStill?: boolean;
+  campExposed?: boolean;
 }
 
 export interface RoomRules {
@@ -67,6 +146,10 @@ export interface RoomRules {
   hidersCanSeeSeekers?: boolean;
   seekersCanSeeHiders?: boolean;
   stormGraceSec?: number;
+  hideTimeSec?: number;
+  timeVictoryEnabled?: boolean;
+  beaconVictoryEnabled?: boolean;
+  requireLocationGuard?: boolean;
   roomLocked?: boolean;
   zonesConfig?: ZonesConfig;
   manualRoles?: Record<string, PlayerRole>;
@@ -156,7 +239,7 @@ export const DEFAULT_ZONES_CONFIG: ZonesConfig = {
 };
 
 export const DEFAULT_RULES: RoomRules = {
-  roundDuration: 30,
+  roundDuration: 10,
   seekersCount: 'random',
   roleAssignment: 'random',
   playZone: 'free',
@@ -164,6 +247,10 @@ export const DEFAULT_RULES: RoomRules = {
   hidersCanSeeSeekers: false,
   seekersCanSeeHiders: false,
   stormGraceSec: 30,
+  hideTimeSec: 30,
+  timeVictoryEnabled: true,
+  beaconVictoryEnabled: true,
+  requireLocationGuard: true,
   roomLocked: false,
   zonesConfig: DEFAULT_ZONES_CONFIG,
   manualRoles: {},
@@ -176,5 +263,32 @@ export const DEFAULT_RULES: RoomRules = {
     noChat: false,
     showCountdown: true,
     nightMode: false,
+    classicModeEnabled: false,
+    classicHintIntervalSec: 30,
+    classicHintsIncludeSeeker: false,
+    beaconHoldSec: 8,
+    beaconRadiusM: 25,
+    hunterPhotoEnabled: false,
+    hunterPhotoWindowSec: 60,
+    hunterPhotoDelaySec: 15,
+    fogEnabled: false,
+    fogRadiusM: 60,
+    radarEnabled: false,
+    radarIntervalSec: 20,
+    radarRangeM: 300,
+    trailEnabled: false,
+    trailDurationSec: 90,
+    stealthStillEnabled: false,
+    stealthStillDelaySec: 10,
+    antiCampEnabled: false,
+    antiCampLimitSec: 45,
+    antiCampRadiusM: 12,
+    hotColdEnabled: false,
+    hotColdNearM: 35,
+    panicEndgameEnabled: false,
+    panicWindowSec: 60,
+    panicPingIntervalSec: 15,
+    testJoystickEnabled: true,
+    testJoystickDefaultSpeed: 'run',
   },
 };

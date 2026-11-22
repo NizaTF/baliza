@@ -1,5 +1,6 @@
 import {
   DEFAULT_RULES,
+  LocationGuardStatus,
   PlayerLocationPayload,
   PlayerProfile,
   PlayerRecord,
@@ -24,7 +25,13 @@ interface LocalStore {
 
 type SyncMessage =
   | { type: 'room_updated'; roomId: string }
-  | { type: 'room_deleted'; roomId: string };
+  | { type: 'room_deleted'; roomId: string }
+  | { type: 'player_kicked'; roomId: string; targetPlayerId: string };
+
+const activeSyncChannels = new Map<
+  string,
+  ReturnType<NonNullable<typeof supabase>['channel']>
+>();
 
 function readLocalStore(): LocalStore {
   try {
@@ -419,6 +426,16 @@ export async function kickPlayer(
   targetPlayerId: string
 ): Promise<void> {
   if (isSupabaseConfigured && supabase) {
+    // Emitir evento broadcast inmediato para expulsar al instante sin esperar al refresco SQL
+    const liveChannel = activeSyncChannels.get(roomId);
+    if (liveChannel) {
+      void liveChannel.send({
+        type: 'broadcast',
+        event: 'player_kicked',
+        payload: { targetPlayerId },
+      });
+    }
+
     const { error } = await supabase
       .from('players')
       .delete()
@@ -433,7 +450,7 @@ export async function kickPlayer(
     (p) => p.id !== targetPlayerId
   );
   writeLocalStore(store);
-  broadcastLocalSync({ type: 'room_updated', roomId });
+  broadcastLocalSync({ type: 'player_kicked', roomId, targetPlayerId });
 }
 
 export async function transferHost(
@@ -550,12 +567,22 @@ export function subscribeToRoom(
   callbacks: {
     onRoomChange: (room: RoomRecord | null) => void;
     onPlayersChange: (players: PlayerRecord[]) => void;
+    onPlayerKicked?: (targetPlayerId: string) => void;
   }
 ): () => void {
   if (isSupabaseConfigured && supabase) {
     const client = supabase;
     const channel = client
-      .channel(`room-sync-${roomId}`)
+      .channel(`room-sync-${roomId}`, {
+        config: { broadcast: { self: false } },
+      })
+      .on('broadcast', { event: 'player_kicked' }, (msg) => {
+        const targetId = (msg.payload as { targetPlayerId?: string } | undefined)
+          ?.targetPlayerId;
+        if (targetId) {
+          callbacks.onPlayerKicked?.(targetId);
+        }
+      })
       .on(
         'postgres_changes',
         {
@@ -598,7 +625,12 @@ export function subscribeToRoom(
       )
       .subscribe();
 
+    activeSyncChannels.set(roomId, channel);
+
     return () => {
+      if (activeSyncChannels.get(roomId) === channel) {
+        activeSyncChannels.delete(roomId);
+      }
       client.removeChannel(channel);
     };
   }
@@ -620,6 +652,9 @@ export function subscribeToRoom(
     channel = new BroadcastChannel(CHANNEL_NAME);
     channel.onmessage = (event: MessageEvent<SyncMessage>) => {
       if (event.data?.roomId === roomId) {
+        if (event.data.type === 'player_kicked') {
+          callbacks.onPlayerKicked?.(event.data.targetPlayerId);
+        }
         syncFromStore();
       }
     };
@@ -701,3 +736,367 @@ export function subscribeToMatchLocations(
     },
   };
 }
+
+interface ClockPingPayload {
+  senderId: string;
+  t0: number;
+}
+
+interface ClockPongPayload {
+  targetId: string;
+  t0: number;
+  hostNow: number;
+}
+
+/**
+ * Sincroniza el reloj de cada dispositivo cliente con el reloj del anfitrión
+ * mediante pings NTP ligeros por Realtime Broadcast (o BroadcastChannel local).
+ */
+export function subscribeToRoomClockSync(
+  roomId: string,
+  playerId: string,
+  isHost: boolean,
+  onOffsetChange: (offsetMs: number) => void
+): () => void {
+  if (isHost) {
+    onOffsetChange(0);
+  }
+
+  let disposed = false;
+  let lastReportedOffset: number | null = isHost ? 0 : null;
+  const recentSamples: Array<{ rtt: number; offset: number; at: number }> = [];
+
+  const handlePong = (payload: ClockPongPayload) => {
+    if (isHost || disposed) return;
+    if (payload.targetId !== playerId) return;
+    const rxTime = Date.now();
+    const rtt = rxTime - payload.t0;
+    if (rtt < 0 || rtt > 5000) return;
+
+    const sampleOffset = payload.hostNow + rtt / 2 - rxTime;
+    recentSamples.push({ rtt, offset: sampleOffset, at: rxTime });
+
+    // Conservar muestras recientes (últimos 45s, máx 8)
+    const cutoff = rxTime - 45000;
+    while (
+      recentSamples.length > 0 &&
+      (recentSamples[0].at < cutoff || recentSamples.length > 8)
+    ) {
+      recentSamples.shift();
+    }
+
+    // Elegir la muestra con menor RTT (menos asimetría de red)
+    let best = recentSamples[0];
+    for (const s of recentSamples) {
+      if (s.rtt < best.rtt) {
+        best = s;
+      }
+    }
+
+    const rounded = Math.round(best.offset);
+    if (
+      lastReportedOffset === null ||
+      Math.abs(rounded - lastReportedOffset) >= 15
+    ) {
+      lastReportedOffset = rounded;
+      onOffsetChange(rounded);
+    }
+  };
+
+  if (isSupabaseConfigured && supabase) {
+    const client = supabase;
+    let isSubscribed = false;
+    const timers: number[] = [];
+
+    const channel = client.channel(`room-clock-${roomId}`, {
+      config: { broadcast: { self: false } },
+    });
+
+    const sendPing = () => {
+      if (disposed || isHost || !isSubscribed) return;
+      const payload: ClockPingPayload = {
+        senderId: playerId,
+        t0: Date.now(),
+      };
+      void channel.send({
+        type: 'broadcast',
+        event: 'clock_ping',
+        payload,
+      });
+    };
+
+    channel
+      .on('broadcast', { event: 'clock_ping' }, (msg) => {
+        if (!isHost || disposed) return;
+        const data = msg.payload as ClockPingPayload | undefined;
+        if (!data || typeof data.senderId !== 'string' || typeof data.t0 !== 'number') {
+          return;
+        }
+        const pong: ClockPongPayload = {
+          targetId: data.senderId,
+          t0: data.t0,
+          hostNow: Date.now(),
+        };
+        void channel.send({
+          type: 'broadcast',
+          event: 'clock_pong',
+          payload: pong,
+        });
+      })
+      .on('broadcast', { event: 'clock_pong' }, (msg) => {
+        const data = msg.payload as ClockPongPayload | undefined;
+        if (
+          data &&
+          typeof data.targetId === 'string' &&
+          typeof data.t0 === 'number' &&
+          typeof data.hostNow === 'number'
+        ) {
+          handlePong(data);
+        }
+      })
+      .subscribe((status) => {
+        isSubscribed = status === 'SUBSCRIBED';
+        if (isSubscribed && !isHost) {
+          sendPing();
+          timers.push(window.setTimeout(sendPing, 250));
+          timers.push(window.setTimeout(sendPing, 650));
+        }
+      });
+
+    const intervalId = isHost
+      ? 0
+      : window.setInterval(sendPing, 3000);
+
+    const handleVisible = () => {
+      if (document.visibilityState === 'visible' && !isHost) {
+        sendPing();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisible);
+    window.addEventListener('online', handleVisible);
+
+    return () => {
+      disposed = true;
+      timers.forEach((id) => window.clearTimeout(id));
+      if (intervalId) window.clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', handleVisible);
+      window.removeEventListener('online', handleVisible);
+      void client.removeChannel(channel);
+    };
+  }
+
+  // Fallback local entre pestañas
+  let localChannel: BroadcastChannel | null = null;
+  if (typeof BroadcastChannel !== 'undefined') {
+    localChannel = new BroadcastChannel(`baliza-clock-${roomId}`);
+    localChannel.onmessage = (
+      event: MessageEvent<
+        | { kind: 'ping'; payload: ClockPingPayload }
+        | { kind: 'pong'; payload: ClockPongPayload }
+      >
+    ) => {
+      if (disposed || !event.data) return;
+      if (event.data.kind === 'ping' && isHost) {
+        localChannel?.postMessage({
+          kind: 'pong',
+          payload: {
+            targetId: event.data.payload.senderId,
+            t0: event.data.payload.t0,
+            hostNow: Date.now(),
+          },
+        });
+      } else if (event.data.kind === 'pong' && !isHost) {
+        handlePong(event.data.payload);
+      }
+    };
+    if (!isHost) {
+      localChannel.postMessage({
+        kind: 'ping',
+        payload: { senderId: playerId, t0: Date.now() },
+      });
+    }
+  }
+
+  return () => {
+    disposed = true;
+    localChannel?.close();
+  };
+}
+
+interface LocationGuardPayload {
+  playerId: string;
+  status: LocationGuardStatus;
+  ts: number;
+}
+
+/**
+ * Sincroniza en tiempo real el estado de la ubicación/GPS de cada jugador en la sala
+ * para que el anfitrión y todos los jugadores detecten si alguien la desactiva.
+ */
+export function subscribeToRoomLocationGuard(
+  roomId: string,
+  playerId: string,
+  initialStatus: LocationGuardStatus,
+  onPeerStatus: (playerId: string, status: LocationGuardStatus) => void
+): {
+  updateMyStatus: (status: LocationGuardStatus) => void;
+  unsubscribe: () => void;
+} {
+  let disposed = false;
+  let currentStatus = initialStatus;
+
+  if (isSupabaseConfigured && supabase) {
+    const client = supabase;
+    let isSubscribed = false;
+    const channel = client.channel(`room-loc-guard-${roomId}`, {
+      config: { broadcast: { self: false } },
+    });
+
+    const emitStatus = () => {
+      if (disposed || !isSubscribed) return;
+      const payload: LocationGuardPayload = {
+        playerId,
+        status: currentStatus,
+        ts: Date.now(),
+      };
+      void channel.send({
+        type: 'broadcast',
+        event: 'loc_guard_status',
+        payload,
+      });
+    };
+
+    channel
+      .on('broadcast', { event: 'loc_guard_status' }, (msg) => {
+        if (disposed) return;
+        const data = msg.payload as LocationGuardPayload | undefined;
+        if (data && typeof data.playerId === 'string' && data.status) {
+          onPeerStatus(data.playerId, data.status);
+        }
+      })
+      .subscribe((status) => {
+        isSubscribed = status === 'SUBSCRIBED';
+        if (isSubscribed) {
+          emitStatus();
+        }
+      });
+
+    const heartbeatId = window.setInterval(emitStatus, 4000);
+
+    return {
+      updateMyStatus: (nextStatus) => {
+        currentStatus = nextStatus;
+        emitStatus();
+      },
+      unsubscribe: () => {
+        disposed = true;
+        window.clearInterval(heartbeatId);
+        void client.removeChannel(channel);
+      },
+    };
+  }
+
+  let localChannel: BroadcastChannel | null = null;
+  if (typeof BroadcastChannel !== 'undefined') {
+    localChannel = new BroadcastChannel(`baliza-loc-guard-${roomId}`);
+    localChannel.onmessage = (event: MessageEvent<LocationGuardPayload>) => {
+      if (disposed || !event.data) return;
+      if (typeof event.data.playerId === 'string' && event.data.status) {
+        onPeerStatus(event.data.playerId, event.data.status);
+      }
+    };
+    localChannel.postMessage({
+      playerId,
+      status: currentStatus,
+      ts: Date.now(),
+    });
+  }
+
+  return {
+    updateMyStatus: (nextStatus) => {
+      currentStatus = nextStatus;
+      localChannel?.postMessage({
+        playerId,
+        status: nextStatus,
+        ts: Date.now(),
+      });
+    },
+    unsubscribe: () => {
+      disposed = true;
+      localChannel?.close();
+    },
+  };
+}
+
+export interface PhotoProofPayload {
+  challengeId: string;
+  playerId: string;
+  playerName: string;
+  dataUrl: string;
+  at: string;
+}
+
+/**
+ * Canal ligero para compartir la foto del reto "Foto con el cazador" en tiempo real
+ * sin saturar el JSON de la base de datos.
+ */
+export function subscribeToPhotoProofs(
+  roomId: string,
+  onProof: (payload: PhotoProofPayload) => void
+): {
+  sendProof: (payload: PhotoProofPayload) => void;
+  unsubscribe: () => void;
+} {
+  if (isSupabaseConfigured && supabase) {
+    const client = supabase;
+    let isSubscribed = false;
+    const channel = client.channel(`room-photo-${roomId}`, {
+      config: { broadcast: { self: false } },
+    });
+
+    channel
+      .on('broadcast', { event: 'photo_proof' }, (msg) => {
+        const data = msg.payload as PhotoProofPayload | undefined;
+        if (data && typeof data.playerId === 'string' && typeof data.dataUrl === 'string') {
+          onProof(data);
+        }
+      })
+      .subscribe((status) => {
+        isSubscribed = status === 'SUBSCRIBED';
+      });
+
+    return {
+      sendProof: (payload) => {
+        if (!isSubscribed) return;
+        void channel.send({
+          type: 'broadcast',
+          event: 'photo_proof',
+          payload,
+        });
+      },
+      unsubscribe: () => {
+        void client.removeChannel(channel);
+      },
+    };
+  }
+
+  let localChannel: BroadcastChannel | null = null;
+  if (typeof BroadcastChannel !== 'undefined') {
+    localChannel = new BroadcastChannel(`baliza-photo-${roomId}`);
+    localChannel.onmessage = (event: MessageEvent<PhotoProofPayload>) => {
+      if (event.data && typeof event.data.playerId === 'string') {
+        onProof(event.data);
+      }
+    };
+  }
+
+  return {
+    sendProof: (payload) => {
+      localChannel?.postMessage(payload);
+    },
+    unsubscribe: () => {
+      localChannel?.close();
+    },
+  };
+}
+

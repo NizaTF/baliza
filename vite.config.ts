@@ -22,8 +22,9 @@ function normalizeBasePath(raw?: string): string {
 
 export default defineConfig(({command}) => {
   const base =
-    command === 'serve' ? '/' : normalizeBasePath(process.env.VITE_BASE_PATH);
-
+    command === 'serve'
+      ? '/'
+      : normalizeBasePath(process.env.VITE_BASE_PATH);
   return {
     base,
     plugins: [
@@ -66,6 +67,10 @@ export default defineConfig(({command}) => {
           ],
         },
         workbox: {
+          skipWaiting: true,
+          clientsClaim: true,
+          maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
+          navigateFallbackDenylist: [/^\/__/, /^\/_aistudio/, /^\/api\//],
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
           runtimeCaching: [
             {
@@ -99,10 +104,45 @@ export default defineConfig(({command}) => {
           ],
         },
         devOptions: {
-          enabled: true,
+          enabled: false,
           type: 'module',
         },
       }),
+      // Unregister any old VitePWA dev service worker from browsers that visited earlier
+      {
+        name: 'cleanup-old-dev-sw',
+        apply: 'serve',
+        configureServer(server) {
+          server.middlewares.use((req, res, next) => {
+            const reqPath = req.url?.split('?')[0];
+            if (reqPath === '/dev-sw.js' || reqPath === '/sw.js') {
+              res.statusCode = 200;
+              res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+              res.setHeader('Cache-Control', 'no-store');
+              res.end(`
+                self.addEventListener('install', () => self.skipWaiting());
+                self.addEventListener('activate', (event) => {
+                  event.waitUntil((async () => {
+                    try {
+                      const keys = await caches.keys();
+                      await Promise.all(keys.map((k) => caches.delete(k)));
+                    } catch {}
+                    try {
+                      await self.registration.unregister();
+                    } catch {}
+                    try {
+                      const clients = await self.clients.matchAll({ type: 'window' });
+                      clients.forEach((client) => client.navigate(client.url));
+                    } catch {}
+                  })());
+                });
+              `);
+              return;
+            }
+            next();
+          });
+        },
+      },
       // Copies src/assets into dist/ so root-relative URLs like
       // "/src/assets/images/..." (e.g. generate_image output) still resolve
       // in production builds. Do not remove.
@@ -128,11 +168,15 @@ export default defineConfig(({command}) => {
       },
     },
     server: {
+      allowedHosts: true,
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modify—file watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',
       // Disable file watching when DISABLE_HMR is true to save CPU during agent edits.
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
+    },
+    preview: {
+      allowedHosts: true,
     },
   };
 });

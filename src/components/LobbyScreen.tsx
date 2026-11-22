@@ -2,22 +2,19 @@ import React, { useState } from 'react';
 import {
   Check,
   Copy,
-  Crown,
-  Eye,
   Lock,
   LogOut,
+  MapPinOff,
+  MoreVertical,
   Play,
   Share2,
-  Shield,
   SlidersHorizontal,
   Unlock,
-  UserCheck,
-  UserCog,
-  UserMinus,
-  Users,
   X,
 } from 'lucide-react';
+import { startBackgroundKeepAlive } from '../lib/backgroundRunner';
 import {
+  LocationGuardStatus,
   PlayerProfile,
   PlayerRecord,
   PlayerRole,
@@ -32,6 +29,9 @@ interface LobbyScreenProps {
   players: PlayerRecord[];
   currentPlayerId: string;
   profile: PlayerProfile;
+  myLocationStatus?: LocationGuardStatus;
+  peerLocationStatuses?: Record<string, LocationGuardStatus>;
+  onRecheckLocation?: () => Promise<void>;
   onUpdateProfileInRoom: (nextProfile: PlayerProfile) => Promise<void>;
   onToggleRoomLock: (locked: boolean) => Promise<void>;
   onKickPlayer: (targetPlayerId: string) => Promise<void>;
@@ -43,13 +43,14 @@ interface LobbyScreenProps {
   onLeaveRoom: () => Promise<void>;
 }
 
-type MobileLobbyTab = 'players' | 'rules';
-
 export const LobbyScreen: React.FC<LobbyScreenProps> = ({
   room,
   players,
   currentPlayerId,
   profile,
+  myLocationStatus = 'unsupported',
+  peerLocationStatuses = {},
+  onRecheckLocation,
   onUpdateProfileInRoom,
   onToggleRoomLock,
   onKickPlayer,
@@ -60,19 +61,18 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
   isStartingMatch = false,
   onLeaveRoom,
 }) => {
-  const [mobileTab, setMobileTab] = useState<MobileLobbyTab>('players');
   const [copiedCode, setCopiedCode] = useState(false);
   const [sharedFeedback, setSharedFeedback] = useState(false);
   const [editingProfile, setEditingProfile] = useState(false);
   const [draftProfile, setDraftProfile] = useState<PlayerProfile>(profile);
   const [savingProfile, setSavingProfile] = useState(false);
   const [leaving, setLeaving] = useState(false);
-  const [confirmKickId, setConfirmKickId] = useState<string | null>(null);
-  const [confirmHostId, setConfirmHostId] = useState<string | null>(null);
+  const [menuPlayerId, setMenuPlayerId] = useState<string | null>(null);
   const [actionBusyId, setActionBusyId] = useState<string | null>(null);
 
   const isHost = room.host_id === currentPlayerId;
   const isLocked = Boolean(room.rules?.roomLocked);
+  const locationGuardEnabled = room.rules?.requireLocationGuard ?? true;
   const canStartMatch = players.length >= 2 && !isStartingMatch;
   const isManualRoles = room.rules.roleAssignment === 'manual';
   const manualRoles = room.rules.manualRoles || {};
@@ -94,7 +94,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
     try {
       await navigator.clipboard.writeText(room.code);
       setCopiedCode(true);
-      setTimeout(() => setCopiedCode(false), 2000);
+      setTimeout(() => setCopiedCode(false), 1800);
     } catch {
       // Ignore clipboard failure
     }
@@ -106,18 +106,18 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
       try {
         await navigator.share({
           title: `Únete a Baliza (${room.code})`,
-          text: `Entra a nuestra sala de Baliza con el código ${room.code}`,
+          text: `Entra con el código ${room.code}`,
           url: shareUrl,
         });
         return;
       } catch {
-        // Fallback to copy link if user cancels or share fails
+        // Fallback to clipboard
       }
     }
     try {
       await navigator.clipboard.writeText(shareUrl);
       setSharedFeedback(true);
-      setTimeout(() => setSharedFeedback(false), 2200);
+      setTimeout(() => setSharedFeedback(false), 2000);
     } catch {
       // Ignore clipboard failure
     }
@@ -135,6 +135,11 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
     }
   };
 
+  const handleStartClick = async () => {
+    void startBackgroundKeepAlive();
+    await onStartMatch();
+  };
+
   const handleLeave = async () => {
     setLeaving(true);
     try {
@@ -145,379 +150,269 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
   };
 
   const handleKick = async (targetId: string) => {
+    setMenuPlayerId(null);
     setActionBusyId(targetId);
     try {
       await onKickPlayer(targetId);
-      setConfirmKickId(null);
     } finally {
       setActionBusyId(null);
     }
   };
 
   const handleTransfer = async (nextHostId: string) => {
+    setMenuPlayerId(null);
     setActionBusyId(nextHostId);
     try {
       await onTransferHost(nextHostId);
-      setConfirmHostId(null);
     } finally {
       setActionBusyId(null);
     }
   };
 
   return (
-    <div className="space-y-5 sm:space-y-6">
-      {/* Cabecera de sala + código + estado */}
-      <section className="rounded-3xl border border-slate-200 bg-white p-5 sm:p-6 shadow-xs">
-        <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
-          <div className="space-y-1.5">
-            <div className="flex flex-wrap items-center gap-2 text-xs font-semibold">
-              <span className={isLocked ? 'text-amber-700' : 'text-emerald-700'}>
-                {isLocked ? 'Entrada cerrada' : 'Sala abierta'}
-              </span>
-              <span aria-hidden="true" className="text-slate-300">
-                ·
-              </span>
-              <span className="text-slate-600">
-                {players.length} {players.length === 1 ? 'jugador' : 'jugadores'}
-              </span>
-              <span aria-hidden="true" className="text-slate-300">
-                ·
-              </span>
-              <span className="text-slate-600">
-                {isHost ? 'Eres anfitrión' : 'Invitado'}
-              </span>
-            </div>
-
-            <div className="flex flex-wrap items-baseline gap-3">
-              <span className="text-sm font-medium text-slate-500">Código:</span>
-              <p
-                className="font-mono text-3xl font-bold tracking-[0.22em] text-slate-900 sm:text-5xl select-all"
-                aria-label={`Código de sala ${room.code}`}
-              >
+    <div className="mx-auto max-w-4xl space-y-6">
+      {/* Cabecera simple de sala */}
+      <section className="clean-card p-5 sm:p-6">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-xs font-medium text-slate-500">
+              {players.length} {players.length === 1 ? 'jugador' : 'jugadores'}
+              {' · '}
+              {isLocked ? 'Entrada cerrada' : 'Sala abierta'}
+              {isHost ? ' · Tú organizas' : ''}
+            </p>
+            <div className="mt-1 flex items-center gap-2.5">
+              <span className="font-mono text-3xl sm:text-4xl font-bold tracking-[0.16em] text-slate-900 select-all">
                 {room.code}
-              </p>
-            </div>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2.5">
-            {isHost && (
+              </span>
               <button
                 type="button"
-                onClick={() => onToggleRoomLock(!isLocked)}
-                className={`inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-2xl border px-4 py-2 text-xs sm:text-sm font-semibold transition-colors whitespace-nowrap ${
-                  isLocked
-                    ? 'border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100'
-                    : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
-                }`}
+                onClick={handleCopyCode}
+                aria-label="Copiar código de sala"
+                className="inline-flex h-9 items-center gap-1 rounded-lg border border-slate-200 px-2.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 transition-colors"
               >
-                {isLocked ? (
+                {copiedCode ? (
                   <>
-                    <Unlock className="h-4 w-4" aria-hidden="true" />
-                    <span>Abrir entrada</span>
+                    <Check className="h-3.5 w-3.5 text-emerald-600" aria-hidden="true" />
+                    <span className="text-emerald-700">Copiado</span>
                   </>
                 ) : (
                   <>
-                    <Lock className="h-4 w-4" aria-hidden="true" />
-                    <span>Cerrar entrada</span>
+                    <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+                    <span>Copiar</span>
                   </>
                 )}
               </button>
-            )}
+            </div>
+          </div>
 
-            <button
-              type="button"
-              onClick={handleCopyCode}
-              className="inline-flex min-h-[44px] flex-1 sm:flex-initial items-center justify-center gap-2 rounded-2xl border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-900 transition-colors hover:bg-slate-50 whitespace-nowrap"
-            >
-              {copiedCode ? (
-                <>
-                  <Check className="h-4 w-4 text-emerald-700" aria-hidden="true" />
-                  <span className="text-emerald-700">Copiado</span>
-                </>
-              ) : (
-                <>
-                  <Copy className="h-4 w-4 text-slate-600" aria-hidden="true" />
-                  <span>Copiar</span>
-                </>
-              )}
-            </button>
-
+          <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
               onClick={handleShare}
-              className="inline-flex min-h-[44px] flex-1 sm:flex-initial items-center justify-center gap-2 rounded-2xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-slate-800 whitespace-nowrap"
+              className="inline-flex min-h-[42px] items-center gap-2 rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 transition-colors whitespace-nowrap"
             >
               {sharedFeedback ? (
                 <>
-                  <Check className="h-4 w-4" aria-hidden="true" />
+                  <Check className="h-4 w-4 text-emerald-400" aria-hidden="true" />
                   <span>Enlace copiado</span>
                 </>
               ) : (
                 <>
                   <Share2 className="h-4 w-4" aria-hidden="true" />
-                  <span>Compartir</span>
+                  <span>Invitar</span>
                 </>
               )}
             </button>
+
+            {isHost && (
+              <button
+                type="button"
+                onClick={() => onToggleRoomLock(!isLocked)}
+                title={isLocked ? 'Abrir sala' : 'Cerrar sala'}
+                aria-label={isLocked ? 'Abrir entrada' : 'Cerrar entrada'}
+                className="inline-flex min-h-[42px] items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors whitespace-nowrap"
+              >
+                {isLocked ? (
+                  <>
+                    <Unlock className="h-4 w-4 text-amber-600" aria-hidden="true" />
+                    <span>Abrir</span>
+                  </>
+                ) : (
+                  <>
+                    <Lock className="h-4 w-4 text-slate-500" aria-hidden="true" />
+                    <span>Cerrar</span>
+                  </>
+                )}
+              </button>
+            )}
           </div>
         </div>
       </section>
 
-      {/* Selector de pestañas en móvil dentro de Sala (sin mapa) */}
-      <div
-        className="grid grid-cols-2 gap-1 rounded-2xl border border-slate-200 bg-slate-100 p-1 lg:hidden"
-        role="tablist"
-        aria-label="Secciones de la sala"
-      >
-        <button
-          type="button"
-          role="tab"
-          aria-selected={mobileTab === 'players'}
-          onClick={() => setMobileTab('players')}
-          className={`flex min-h-[44px] items-center justify-center gap-1.5 rounded-xl px-2 py-2 text-xs font-semibold transition-colors whitespace-nowrap ${
-            mobileTab === 'players'
-              ? 'bg-white text-emerald-700 shadow-xs'
-              : 'text-slate-600'
-          }`}
+      {/* Aviso GPS solo si hace falta */}
+      {locationGuardEnabled && myLocationStatus === 'disabled' && (
+        <div
+          role="alert"
+          className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900"
         >
-          <Users className="h-4 w-4" aria-hidden="true" />
-          <span>Jugadores ({players.length})</span>
-        </button>
+          <span className="flex items-center gap-2 font-medium">
+            <MapPinOff className="h-4 w-4 text-rose-600 shrink-0" aria-hidden="true" />
+            <span>Activa el GPS del móvil para poder jugar.</span>
+          </span>
+          {onRecheckLocation && (
+            <button
+              type="button"
+              onClick={() => void onRecheckLocation()}
+              className="rounded-lg bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-700"
+            >
+              Comprobar GPS
+            </button>
+          )}
+        </div>
+      )}
 
-        <button
-          type="button"
-          role="tab"
-          aria-selected={mobileTab === 'rules'}
-          onClick={() => setMobileTab('rules')}
-          className={`flex min-h-[44px] items-center justify-center gap-1.5 rounded-xl px-2 py-2 text-xs font-semibold transition-colors whitespace-nowrap ${
-            mobileTab === 'rules'
-              ? 'bg-white text-emerald-700 shadow-xs'
-              : 'text-slate-600'
-          }`}
-        >
-          <SlidersHorizontal className="h-4 w-4" aria-hidden="true" />
-          <span>Reglas</span>
-        </button>
-      </div>
-
-      {/* Layout principal sin mapa en Sala: Jugadores (7 cols) + Reglas y Acciones (5 cols) */}
+      {/* Contenido en 2 columnas limpias */}
       <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-12">
-        {/* Columna izquierda: Jugadores conectados y gestión de usuarios */}
-        <section
-          aria-labelledby="players-heading"
-          className={`${
-            mobileTab === 'players' ? 'block' : 'hidden'
-          } lg:block rounded-3xl border border-slate-200 bg-white p-5 sm:p-6 shadow-xs lg:col-span-7`}
-        >
-          <div className="flex items-center justify-between gap-3 border-b border-slate-200 pb-4">
-            <div>
-              <h2
-                id="players-heading"
-                className="font-display text-lg font-bold text-slate-900"
-              >
-                Jugadores en la sala
-              </h2>
-              <p className="mt-0.5 text-xs text-slate-500">
-                {isHost
-                  ? 'Gestiona jugadores o selecciona quién será buscador si los roles son manuales.'
-                  : 'Lista sincronizada en tiempo real. La zona se revelará al comenzar.'}
-              </p>
-            </div>
-            <span className="font-mono text-lg font-bold tabular-nums text-slate-900">
-              {players.length}
-            </span>
+        {/* Lista de jugadores */}
+        <section className="clean-card p-5 sm:p-6 lg:col-span-7">
+          <div className="flex items-baseline justify-between gap-2 pb-3 border-b border-slate-100">
+            <h2 className="font-display text-lg font-bold text-slate-900">
+              Jugadores ({players.length})
+            </h2>
+            {isManualRoles && (
+              <span className="text-xs font-medium text-slate-500">
+                Reparto manual activo
+              </span>
+            )}
           </div>
 
-          <ul className="mt-4 divide-y divide-slate-100">
+          <ul className="divide-y divide-slate-100">
             {players.map((player) => {
               const isSelf = player.id === currentPlayerId;
-              const isConfirmingKick = confirmKickId === player.id;
-              const isConfirmingHost = confirmHostId === player.id;
+              const isMenuOpen = menuPlayerId === player.id;
               const isBusyRow = actionBusyId === player.id;
+              const locStatus = isSelf
+                ? myLocationStatus
+                : peerLocationStatuses[player.id];
 
               return (
-                <li
-                  key={player.id}
-                  className="py-3 first:pt-1 last:pb-1 space-y-2.5"
-                >
+                <li key={player.id} className="py-3 space-y-2">
                   <div className="flex items-center justify-between gap-3">
                     <div className="flex min-w-0 items-center gap-3">
                       <PlayerAvatar
                         emoji={player.emoji}
                         color={player.color}
-                        size="md"
+                        size="sm"
                         name={player.name}
                       />
                       <div className="min-w-0">
-                        <p className="truncate text-base font-semibold text-slate-900">
+                        <p className="truncate text-sm font-semibold text-slate-900">
                           {player.name}
-                        </p>
-                        <div className="flex items-center gap-2 text-xs text-slate-500">
-                          {player.is_host && (
-                            <span className="inline-flex items-center gap-1 font-semibold text-amber-700">
-                              <Crown className="h-3.5 w-3.5" aria-hidden="true" />
-                              Anfitrión
-                            </span>
-                          )}
-                          {player.is_host && isSelf && (
-                            <span aria-hidden="true">·</span>
-                          )}
                           {isSelf && (
-                            <span className="font-medium text-emerald-700">
-                              Tú
+                            <span className="ml-1.5 text-xs font-medium text-emerald-700">
+                              (Tú)
                             </span>
                           )}
-                          {!player.is_host && !isSelf && <span>Jugador</span>}
-                        </div>
+                        </p>
+                        <p className="text-xs text-slate-500">
+                          {player.is_host ? 'Anfitrión' : 'Jugador'}
+                          {locationGuardEnabled && locStatus === 'disabled' && (
+                            <span className="text-rose-600"> · Sin GPS</span>
+                          )}
+                        </p>
                       </div>
                     </div>
 
-                    {isSelf ? (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setDraftProfile(profile);
-                          setEditingProfile(true);
-                        }}
-                        aria-label="Editar mi perfil"
-                        className="inline-flex min-h-[44px] items-center gap-1.5 rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 transition-colors hover:bg-slate-50 whitespace-nowrap shrink-0"
-                      >
-                        <UserCog className="h-4 w-4" aria-hidden="true" />
-                        <span>Editar</span>
-                      </button>
-                    ) : isHost ? (
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setConfirmKickId(null);
-                            setConfirmHostId(
-                              isConfirmingHost ? null : player.id
-                            );
-                          }}
-                          disabled={isBusyRow}
-                          title="Hacer anfitrión"
-                          aria-label={`Hacer anfitrión a ${player.name}`}
-                          className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-xl border border-slate-200 text-slate-700 transition-colors hover:bg-amber-50 hover:text-amber-800 hover:border-amber-300"
-                        >
-                          <UserCheck className="h-4 w-4" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setConfirmHostId(null);
-                            setConfirmKickId(
-                              isConfirmingKick ? null : player.id
-                            );
-                          }}
-                          disabled={isBusyRow}
-                          title="Expulsar de la sala"
-                          aria-label={`Expulsar a ${player.name}`}
-                          className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-xl border border-slate-200 text-slate-700 transition-colors hover:bg-rose-50 hover:text-rose-700 hover:border-rose-300"
-                        >
-                          <UserMinus className="h-4 w-4" />
-                        </button>
-                      </div>
-                    ) : null}
-                  </div>
-
-                  {/* Rol manual si está activado */}
-                  {isManualRoles && (
-                    <div className="flex items-center justify-between gap-2 rounded-xl bg-slate-50 px-3 py-2 text-xs">
-                      <span className="font-medium text-slate-600">
-                        Rol asignado:
-                      </span>
-                      {isHost ? (
-                        <div className="inline-flex rounded-lg bg-slate-200/80 p-0.5">
-                          <button
-                            type="button"
-                            onClick={() => handleSetManualRole(player.id, 'hider')}
-                            className={`inline-flex min-h-[32px] items-center gap-1 rounded-md px-2.5 py-1 font-semibold transition-colors whitespace-nowrap ${
-                              (manualRoles[player.id] ?? 'hider') === 'hider'
-                                ? 'bg-white text-emerald-700 shadow-xs'
-                                : 'text-slate-600'
-                            }`}
-                          >
-                            <Shield className="h-3 w-3" aria-hidden="true" />
-                            <span>Escondido</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleSetManualRole(player.id, 'seeker')}
-                            className={`inline-flex min-h-[32px] items-center gap-1 rounded-md px-2.5 py-1 font-semibold transition-colors whitespace-nowrap ${
+                    <div className="flex items-center gap-2 shrink-0">
+                      {isManualRoles && (
+                        isHost ? (
+                          <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5 text-xs font-semibold">
+                            <button
+                              type="button"
+                              onClick={() => handleSetManualRole(player.id, 'hider')}
+                              className={`rounded-md px-2.5 py-1 transition-colors ${
+                                (manualRoles[player.id] ?? 'hider') === 'hider'
+                                  ? 'bg-emerald-600 text-white'
+                                  : 'text-slate-600 hover:text-slate-900'
+                              }`}
+                            >
+                              Fugitivo
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleSetManualRole(player.id, 'seeker')}
+                              className={`rounded-md px-2.5 py-1 transition-colors ${
+                                manualRoles[player.id] === 'seeker'
+                                  ? 'bg-rose-600 text-white'
+                                  : 'text-slate-600 hover:text-slate-900'
+                              }`}
+                            >
+                              Buscador
+                            </button>
+                          </div>
+                        ) : (
+                          <span
+                            className={`text-xs font-semibold ${
                               manualRoles[player.id] === 'seeker'
-                                ? 'bg-white text-rose-700 shadow-xs'
-                                : 'text-slate-600'
+                                ? 'text-rose-600'
+                                : 'text-emerald-700'
                             }`}
                           >
-                            <Eye className="h-3 w-3" aria-hidden="true" />
-                            <span>Buscador</span>
-                          </button>
-                        </div>
-                      ) : (
-                        <span
-                          className={`font-semibold ${
-                            manualRoles[player.id] === 'seeker'
-                              ? 'text-rose-700'
-                              : 'text-emerald-700'
-                          }`}
+                            {manualRoles[player.id] === 'seeker'
+                              ? 'Buscador'
+                              : 'Fugitivo'}
+                          </span>
+                        )
+                      )}
+
+                      {isSelf && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setDraftProfile(profile);
+                            setEditingProfile(true);
+                          }}
+                          className="text-xs font-semibold text-slate-600 hover:text-slate-900 px-2 py-1"
                         >
-                          {manualRoles[player.id] === 'seeker'
-                            ? 'Buscador'
-                            : 'Escondido'}
-                        </span>
+                          Editar
+                        </button>
+                      )}
+
+                      {isHost && !isSelf && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setMenuPlayerId(isMenuOpen ? null : player.id)
+                          }
+                          disabled={isBusyRow}
+                          aria-label={`Opciones para ${player.name}`}
+                          className="flex h-9 w-9 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                        >
+                          <MoreVertical className="h-4 w-4" />
+                        </button>
                       )}
                     </div>
-                  )}
+                  </div>
 
-                  {/* Confirmación en línea para móvil (evita pulsaciones accidentales) */}
-                  {isHost && isConfirmingKick && (
-                    <div className="flex items-center justify-between gap-2 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-xs">
-                      <span className="font-medium text-rose-900">
-                        ¿Expulsar a {player.name}?
-                      </span>
-                      <div className="flex items-center gap-2 shrink-0">
-                        <button
-                          type="button"
-                          onClick={() => setConfirmKickId(null)}
-                          className="min-h-[36px] px-2.5 font-semibold text-slate-600"
-                        >
-                          No
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleKick(player.id)}
-                          disabled={isBusyRow}
-                          className="min-h-[36px] rounded-lg bg-rose-700 px-3 font-semibold text-white hover:bg-rose-800"
-                        >
-                          Expulsar
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {isHost && isConfirmingHost && (
-                    <div className="flex items-center justify-between gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs">
-                      <span className="font-medium text-amber-900">
-                        ¿Ceder anfitrión a {player.name}?
-                      </span>
-                      <div className="flex items-center gap-2 shrink-0">
-                        <button
-                          type="button"
-                          onClick={() => setConfirmHostId(null)}
-                          className="min-h-[36px] px-2.5 font-semibold text-slate-600"
-                        >
-                          No
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleTransfer(player.id)}
-                          disabled={isBusyRow}
-                          className="min-h-[36px] rounded-lg bg-amber-700 px-3 font-semibold text-white hover:bg-amber-800"
-                        >
-                          Confirmar
-                        </button>
-                      </div>
+                  {isHost && !isSelf && isMenuOpen && (
+                    <div className="flex items-center justify-end gap-2 rounded-xl bg-slate-50 px-3 py-2 text-xs">
+                      <button
+                        type="button"
+                        onClick={() => handleTransfer(player.id)}
+                        disabled={isBusyRow}
+                        className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 font-semibold text-slate-700 hover:bg-slate-100"
+                      >
+                        Hacer anfitrión
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleKick(player.id)}
+                        disabled={isBusyRow}
+                        className="rounded-lg bg-rose-600 px-3 py-1.5 font-semibold text-white hover:bg-rose-700"
+                      >
+                        Expulsar
+                      </button>
                     </div>
                   )}
                 </li>
@@ -526,104 +421,96 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
           </ul>
         </section>
 
-        {/* Columna derecha: Reglas + Acciones */}
-        <div className="space-y-6 lg:col-span-5">
-          <section
-            className={`${
-              mobileTab === 'rules' ? 'block' : 'hidden'
-            } lg:block rounded-3xl border border-slate-200 bg-white p-5 sm:p-6 shadow-xs`}
-          >
-            <RulesSummary rules={room.rules} isHost={isHost} />
-          </section>
+        {/* Reglas y empezar */}
+        <section className="clean-card p-5 sm:p-6 space-y-5 lg:col-span-5">
+          <div>
+            <h2 className="font-display text-lg font-bold text-slate-900 mb-2">
+              Resumen de partida
+            </h2>
+            <RulesSummary rules={room.rules} />
+          </div>
 
-          <section className="rounded-3xl border border-slate-200 bg-white p-5 sm:p-6 shadow-xs space-y-3">
+          <div className="space-y-2.5 border-t border-slate-100 pt-4">
             {isHost ? (
               <>
                 <button
                   type="button"
-                  onClick={onEditRules}
-                  className="flex w-full min-h-[48px] items-center justify-center gap-2 rounded-2xl border border-slate-300 bg-white px-5 py-3 text-sm font-semibold text-slate-900 transition-colors hover:bg-slate-50"
+                  disabled={!canStartMatch}
+                  onClick={handleStartClick}
+                  className="flex min-h-[48px] w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-5 py-3 text-base font-semibold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 transition-colors"
                 >
-                  <SlidersHorizontal className="h-4 w-4 text-slate-700" aria-hidden="true" />
-                  <span>Editar reglas y zonas</span>
+                  <Play className="h-5 w-5" aria-hidden="true" />
+                  <span>
+                    {isStartingMatch ? 'Empezando...' : 'Empezar partida'}
+                  </span>
                 </button>
 
-                <div className="space-y-1.5 pt-1">
-                  <button
-                    type="button"
-                    disabled={!canStartMatch}
-                    onClick={onStartMatch}
-                    className={`flex w-full min-h-[52px] items-center justify-center gap-2 rounded-2xl px-5 py-3 text-base font-semibold transition-colors ${
-                      canStartMatch
-                        ? 'bg-emerald-700 text-white shadow-sm hover:bg-emerald-800'
-                        : 'cursor-not-allowed bg-slate-200 text-slate-500'
-                    }`}
-                  >
-                    <Play className="h-4 w-4" aria-hidden="true" />
-                    <span>
-                      {isStartingMatch ? 'Iniciando partida...' : 'Iniciar partida'}
-                    </span>
-                  </button>
+                {players.length < 2 && (
                   <p className="text-center text-xs text-slate-500">
-                    {players.length < 2
-                      ? `Se necesitan mínimo 2 jugadores para iniciar (${players.length}/2).`
-                      : `Listo para iniciar con ${players.length} jugadores.`}
+                    Falta al menos 1 jugador más ({players.length}/2)
                   </p>
-                </div>
+                )}
+
+                <button
+                  type="button"
+                  onClick={onEditRules}
+                  className="flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
+                >
+                  <SlidersHorizontal className="h-4 w-4" aria-hidden="true" />
+                  <span>Cambiar reglas y mapa</span>
+                </button>
               </>
             ) : (
-              <p className="text-sm text-slate-600 leading-relaxed">
+              <p className="rounded-xl bg-slate-50 px-4 py-3 text-center text-sm text-slate-600">
                 {players.length < 2
-                  ? 'Esperando a que entre al menos 1 jugador más (mínimo 2).'
-                  : 'Listo. La zona aparecerá al iniciar la partida.'}
+                  ? 'Esperando a que entre al menos 1 amigo más.'
+                  : 'Listo. Esperando a que el anfitrión empiece la partida.'}
               </p>
             )}
 
-            <div className="border-t border-slate-100 pt-3">
-              <button
-                type="button"
-                onClick={handleLeave}
-                disabled={leaving}
-                className="flex w-full min-h-[44px] items-center justify-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold text-rose-700 transition-colors hover:bg-rose-50 disabled:opacity-50"
-              >
-                <LogOut className="h-4 w-4" aria-hidden="true" />
-                <span>
-                  {leaving
-                    ? 'Saliendo...'
-                    : isHost
-                    ? 'Cerrar y borrar sala'
-                    : 'Salir de la sala'}
-                </span>
-              </button>
-            </div>
-          </section>
-        </div>
+            <button
+              type="button"
+              onClick={handleLeave}
+              disabled={leaving}
+              className="flex min-h-[40px] w-full items-center justify-center gap-1.5 rounded-xl px-4 py-2 text-xs font-semibold text-rose-600 hover:bg-rose-50 disabled:opacity-50 transition-colors"
+            >
+              <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>
+                {leaving
+                  ? 'Saliendo...'
+                  : isHost
+                  ? 'Cerrar sala'
+                  : 'Salir de la sala'}
+              </span>
+            </button>
+          </div>
+        </section>
       </div>
 
-      {/* Modal para editar perfil sin salir del lobby */}
+      {/* Modal sencillo para editar mi nombre o icono */}
       {editingProfile && (
         <div
-          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-950/50 p-0 sm:p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-900/50 p-0 sm:p-4 backdrop-blur-xs"
           role="dialog"
           aria-modal="true"
           aria-labelledby="edit-profile-modal-title"
         >
           <form
             onSubmit={handleSaveProfileModal}
-            className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-t-3xl sm:rounded-3xl border border-slate-200 bg-white p-6 shadow-xl"
+            className="w-full max-w-md rounded-t-2xl sm:rounded-2xl border border-slate-200 bg-white p-5 sm:p-6 shadow-xl space-y-5"
           >
-            <div className="mb-4 flex items-center justify-between gap-4">
+            <div className="flex items-center justify-between gap-4">
               <h3
                 id="edit-profile-modal-title"
-                className="font-display text-xl font-bold text-slate-900"
+                className="font-display text-lg font-bold text-slate-900"
               >
-                Actualizar tu perfil
+                Editar jugador
               </h3>
               <button
                 type="button"
                 onClick={() => setEditingProfile(false)}
                 aria-label="Cerrar"
-                className="flex min-h-[44px] min-w-[44px] items-center justify-center rounded-xl text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+                className="flex h-9 w-9 items-center justify-center rounded-xl text-slate-500 hover:bg-slate-100"
               >
                 <X className="h-5 w-5" />
               </button>
@@ -632,27 +519,26 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
             <ProfileCustomizer
               profile={draftProfile}
               onChange={setDraftProfile}
+              defaultExpanded={true}
               nameError={
-                draftProfile.name.trim().length < 2
-                  ? 'Mínimo 2 caracteres.'
-                  : null
+                draftProfile.name.trim().length < 2 ? 'Mínimo 2 letras.' : null
               }
             />
 
-            <div className="mt-6 flex gap-3">
+            <div className="flex gap-2.5 pt-1">
               <button
                 type="button"
                 onClick={() => setEditingProfile(false)}
-                className="min-h-[48px] flex-1 rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+                className="min-h-[44px] flex-1 rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 hover:bg-slate-50"
               >
                 Cancelar
               </button>
               <button
                 type="submit"
                 disabled={savingProfile || draftProfile.name.trim().length < 2}
-                className="min-h-[48px] flex-1 rounded-xl bg-emerald-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-800 disabled:opacity-50"
+                className="min-h-[44px] flex-1 rounded-xl bg-emerald-600 px-4 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
               >
-                {savingProfile ? 'Guardando...' : 'Guardar cambios'}
+                {savingProfile ? 'Guardando...' : 'Guardar'}
               </button>
             </div>
           </form>

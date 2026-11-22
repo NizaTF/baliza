@@ -1,5 +1,6 @@
 import {
   DEFAULT_ZONES_CONFIG,
+  ExtractionBeacon,
   RoomRules,
   StormZonePhase,
   ZonesConfig,
@@ -8,9 +9,7 @@ import {
 const EARTH_RADIUS_M = 6371000;
 export const VALENCIA_CENTER = { lat: 39.4699, lng: -0.3763 } as const;
 export const MIN_ZONES_COUNT = 1;
-export const MAX_ZONES_COUNT = 8;
-export const MIN_ZONE_RADIUS_M = 25;
-export const MAX_ZONE_RADIUS_M = 3000;
+export const MIN_ZONE_RADIUS_M = 1;
 
 export function offsetLatLng(
   lat: number,
@@ -113,13 +112,13 @@ export function generateRandomZones(options: {
   defaultWaitSec?: number;
   defaultShrinkSec?: number;
 }): StormZonePhase[] {
-  const count = Math.max(MIN_ZONES_COUNT, Math.min(MAX_ZONES_COUNT, options.count));
+  const count = Math.max(MIN_ZONES_COUNT, Math.round(options.count));
   const initialRadius = Math.max(
     MIN_ZONE_RADIUS_M,
-    Math.min(MAX_ZONE_RADIUS_M, options.initialRadius ?? 900)
+    Math.round(options.initialRadius ?? 900)
   );
-  const baseWait = options.defaultWaitSec ?? 90;
-  const baseShrink = options.defaultShrinkSec ?? 45;
+  const baseWait = Math.max(1, Math.round(options.defaultWaitSec ?? 90));
+  const baseShrink = Math.max(1, Math.round(options.defaultShrinkSec ?? 45));
 
   const zones: StormZonePhase[] = [
     {
@@ -127,23 +126,26 @@ export function generateRandomZones(options: {
       lat: Number(options.anchorLat.toFixed(6)),
       lng: Number(options.anchorLng.toFixed(6)),
       radius: initialRadius,
-      waitTimeSec: Math.max(15, baseWait),
-      shrinkTimeSec: Math.max(10, baseShrink),
+      waitTimeSec: baseWait,
+      shrinkTimeSec: baseShrink,
     },
   ];
 
   for (let i = 1; i < count; i++) {
     const prev = zones[i - 1];
     const ratio = 0.48 + Math.random() * 0.14;
-    const rawRadius = Math.round((prev.radius * ratio) / 5) * 5;
-    const radius = Math.max(MIN_ZONE_RADIUS_M, Math.min(prev.radius - 15, rawRadius));
+    const rawRadius = Math.max(1, Math.round((prev.radius * ratio) / 5) * 5);
+    const radius = Math.max(
+      MIN_ZONE_RADIUS_M,
+      prev.radius > 10 ? Math.min(prev.radius - 1, rawRadius) : prev.radius
+    );
     const maxOffset = Math.max(0, prev.radius - radius);
     const angle = Math.random() * Math.PI * 2;
     const dist = Math.sqrt(Math.random()) * maxOffset * 0.84;
     const nextPos = offsetLatLng(prev.lat, prev.lng, dist, angle);
 
-    const waitTimeSec = Math.max(15, Math.round(baseWait * Math.pow(0.85, i) / 5) * 5);
-    const shrinkTimeSec = Math.max(10, Math.round(baseShrink * Math.pow(0.9, i) / 5) * 5);
+    const waitTimeSec = Math.max(1, Math.round((baseWait * Math.pow(0.85, i)) / 5) * 5);
+    const shrinkTimeSec = Math.max(1, Math.round((baseShrink * Math.pow(0.9, i)) / 5) * 5);
 
     zones.push({
       id: `z${i + 1}`,
@@ -159,14 +161,13 @@ export function generateRandomZones(options: {
 }
 
 export function appendNextZone(zones: StormZonePhase[]): StormZonePhase[] {
-  if (zones.length >= MAX_ZONES_COUNT) return zones;
   if (zones.length === 0) {
     return structuredClone(DEFAULT_ZONES_CONFIG.zones.slice(0, 1));
   }
   const prev = zones[zones.length - 1];
   const radius = Math.max(
     MIN_ZONE_RADIUS_M,
-    Math.round((prev.radius * 0.55) / 5) * 5
+    Math.round((prev.radius * 0.55) / 5) * 5 || Math.max(1, Math.floor(prev.radius / 2))
   );
   const maxOffset = Math.max(0, prev.radius - radius);
   const angle = Math.random() * Math.PI * 2;
@@ -180,8 +181,8 @@ export function appendNextZone(zones: StormZonePhase[]): StormZonePhase[] {
       lat: pos.lat,
       lng: pos.lng,
       radius,
-      waitTimeSec: Math.max(15, prev.waitTimeSec - 15),
-      shrinkTimeSec: Math.max(10, prev.shrinkTimeSec - 5),
+      waitTimeSec: Math.max(5, prev.waitTimeSec - 15),
+      shrinkTimeSec: Math.max(5, prev.shrinkTimeSec - 5),
     },
   ];
 }
@@ -328,6 +329,51 @@ export function evaluateStormAtElapsed(
     currentLng: last.lng,
     currentRadius: last.radius,
     nextZone: null,
+  };
+}
+
+/**
+ * Genera una Baliza de Extracción dentro de la zona segura final para que los fugitivos
+ * puedan ganar si llegan a ella cuando se desbloquee (además de sobrevivir al tiempo límite).
+ */
+export function generateExtractionBeacon(
+  zones: StormZonePhase[],
+  roundDurationMin: number,
+  radiusM = 25
+): ExtractionBeacon {
+  const targetZone = zones[zones.length - 1] ?? {
+    lat: VALENCIA_CENTER.lat,
+    lng: VALENCIA_CENTER.lng,
+    radius: 250,
+    waitTimeSec: 60,
+    shrinkTimeSec: 30,
+  };
+
+  const maxOffset = Math.max(0, targetZone.radius - 30) * 0.55;
+  const dist = Math.sqrt(Math.random()) * maxOffset;
+  const angle = Math.random() * Math.PI * 2;
+  const pos = offsetLatLng(targetZone.lat, targetZone.lng, dist, angle);
+
+  const totalStormSec = zones.reduce((acc, z, idx) => {
+    if (idx === 0) return acc + z.waitTimeSec;
+    return acc + z.shrinkTimeSec + z.waitTimeSec;
+  }, 0);
+
+  const totalRoundSec = Math.max(30, roundDurationMin * 60);
+  const targetUnlock = Math.min(
+    Math.round(totalRoundSec * 0.45),
+    Math.max(20, Math.round(totalStormSec * 0.65))
+  );
+  const unlockAtSec = Math.max(
+    15,
+    Math.min(targetUnlock, Math.max(15, totalRoundSec - 20))
+  );
+
+  return {
+    lat: pos.lat,
+    lng: pos.lng,
+    radiusM,
+    unlockAtSec,
   };
 }
 

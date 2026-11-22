@@ -4,115 +4,76 @@ import { RoomRules, SeekersCount } from '../types/game';
 
 interface RulesSummaryProps {
   rules: RoomRules;
-  isHost: boolean;
 }
 
 function formatSeekers(count: SeekersCount): string {
-  return count === 'random' ? 'Aleatorio' : `${count}`;
+  return count === 'random' ? 'Al azar' : `${count}`;
 }
 
-export const RulesSummary: React.FC<RulesSummaryProps> = ({ rules, isHost }) => {
+export const RulesSummary: React.FC<RulesSummaryProps> = ({ rules }) => {
   const zonesConfig = normalizeZonesConfig(rules);
   const totalStormSec = zonesConfig.zones.reduce((acc, z, idx) => {
     if (idx === 0) return acc + z.waitTimeSec;
     return acc + z.shrinkTimeSec + z.waitTimeSec;
   }, 0);
 
+  const activeModesList = (() => {
+    const m = rules.modifiers;
+    const labels: string[] = [];
+    if (m?.classicModeEnabled) labels.push('🎮 Clásico');
+    if (rules.timeVictoryEnabled ?? true) labels.push('⏳ Tiempo');
+    if (rules.beaconVictoryEnabled ?? true) labels.push('🚩 Baliza');
+    if (m?.hunterPhotoEnabled) labels.push('📸 Foto');
+    if (m?.fogEnabled) labels.push('🌫️ Niebla');
+    if (m?.radarEnabled) labels.push('📡 Radar');
+    if (m?.trailEnabled) labels.push('👣 Rastro');
+    if (m?.stealthStillEnabled) labels.push('🥷 Sigilo');
+    if (m?.antiCampEnabled) labels.push('🚨 Anti-camper');
+    if (m?.hotColdEnabled) labels.push('🌡️ Frío/Caliente');
+    if (m?.panicEndgameEnabled) labels.push('⚡ Recta final');
+    if (m?.testJoystickEnabled ?? true) labels.push('🕹️ Joystick');
+    return labels;
+  })();
+
   return (
-    <div className="space-y-5">
-      <div className="border-b border-slate-200 pb-4">
-        <h2 className="font-display text-lg font-bold text-slate-900">
-          Reglas de la partida
-        </h2>
-        <p className="mt-0.5 text-xs text-slate-500">
-          {isHost
-            ? 'Configura reglas y zonas desde la pestaña Reglas.'
-            : 'Solo lectura · Se actualizan en vivo si el anfitrión las modifica.'}
-        </p>
+    <dl className="divide-y divide-slate-100 text-sm">
+      <div className="flex items-center justify-between gap-3 py-2.5">
+        <dt className="text-slate-500">Duración</dt>
+        <dd className="font-semibold tabular-nums text-slate-900">
+          {rules.roundDuration} min
+        </dd>
       </div>
 
-      <dl className="grid grid-cols-2 gap-x-6 gap-y-4">
-        <div>
-          <dt className="text-xs font-medium text-slate-500">Duración máxima</dt>
-          <dd className="mt-1 font-mono text-base font-bold tabular-nums text-slate-900">
-            {rules.roundDuration} min
-          </dd>
-        </div>
+      <div className="flex items-center justify-between gap-3 py-2.5">
+        <dt className="text-slate-500">Buscadores</dt>
+        <dd className="font-semibold tabular-nums text-slate-900">
+          {formatSeekers(rules.seekersCount)} ·{' '}
+          {rules.roleAssignment === 'random' ? 'Ruleta' : 'Manual'}
+        </dd>
+      </div>
 
-        <div>
-          <dt className="text-xs font-medium text-slate-500">Buscadores</dt>
-          <dd className="mt-1 text-base font-semibold text-slate-900">
-            {formatSeekers(rules.seekersCount)}
-          </dd>
-        </div>
+      <div className="flex items-center justify-between gap-3 py-2.5">
+        <dt className="text-slate-500">Escondite inicial</dt>
+        <dd className="font-semibold tabular-nums text-slate-900">
+          {formatDurationSec(rules.hideTimeSec ?? 30)}
+        </dd>
+      </div>
 
-        <div>
-          <dt className="text-xs font-medium text-slate-500">Roles</dt>
-          <dd className="mt-1 text-base font-semibold text-slate-900">
-            {rules.roleAssignment === 'random' ? 'Aleatoria' : 'Manual'}
-          </dd>
-        </div>
+      <div className="flex items-center justify-between gap-3 py-2.5">
+        <dt className="text-slate-500">Zonas de tormenta</dt>
+        <dd className="font-semibold tabular-nums text-slate-900">
+          {zonesConfig.zones.length} ({formatDurationSec(totalStormSec)})
+        </dd>
+      </div>
 
-        <div>
-          <dt className="text-xs font-medium text-slate-500">Pistas periódicas</dt>
-          <dd
-            className={`mt-1 text-base font-semibold ${
-              rules.hints ? 'text-emerald-700' : 'text-slate-600'
-            }`}
-          >
-            {rules.hints ? 'Activado' : 'Desactivado'}
-          </dd>
-        </div>
-
-        <div>
-          <dt className="text-xs font-medium text-slate-500">Modo de zonas</dt>
-          <dd className="mt-1 text-base font-semibold text-slate-900">
-            {zonesConfig.mode === 'random' ? 'Aleatoria (oculta)' : 'Manual'}
-          </dd>
-        </div>
-
-        <div>
-          <dt className="text-xs font-medium text-slate-500">Fases de tormenta</dt>
-          <dd className="mt-1 font-mono text-base font-bold tabular-nums text-slate-900">
-            {zonesConfig.zones.length} · {formatDurationSec(totalStormSec)}
-          </dd>
-        </div>
-
-        <div>
-          <dt className="text-xs font-medium text-slate-500">
-            Ven al buscador
-          </dt>
-          <dd
-            className={`mt-1 text-base font-semibold ${
-              rules.hidersCanSeeSeekers ? 'text-emerald-700' : 'text-slate-600'
-            }`}
-          >
-            {rules.hidersCanSeeSeekers ? 'Sí' : 'No'}
-          </dd>
-        </div>
-
-        <div>
-          <dt className="text-xs font-medium text-slate-500">
-            Buscador ve jugadores
-          </dt>
-          <dd
-            className={`mt-1 text-base font-semibold ${
-              rules.seekersCanSeeHiders ? 'text-emerald-700' : 'text-slate-600'
-            }`}
-          >
-            {rules.seekersCanSeeHiders ? 'Sí' : 'No'}
-          </dd>
-        </div>
-
-        <div className="col-span-2">
-          <dt className="text-xs font-medium text-slate-500">
-            Tiempo máximo en tormenta
-          </dt>
-          <dd className="mt-1 font-mono text-base font-bold tabular-nums text-violet-700">
-            {rules.stormGraceSec ?? 30} s (revela y elimina)
-          </dd>
-        </div>
-      </dl>
-    </div>
+      <div className="pt-3">
+        <dt className="text-xs font-medium text-slate-500">Modos activos</dt>
+        <dd className="mt-1 text-xs sm:text-sm font-medium text-slate-800 leading-relaxed">
+          {activeModesList.length > 0
+            ? activeModesList.join(' · ')
+            : 'Ninguno'}
+        </dd>
+      </div>
+    </dl>
   );
 };
