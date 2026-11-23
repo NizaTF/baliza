@@ -1,5 +1,14 @@
 import React, { useMemo, useState } from 'react';
-import { Crown, Eye, Save, Shield } from 'lucide-react';
+import {
+  ChevronRight,
+  Clock,
+  Crown,
+  Eye,
+  Map as MapIcon,
+  Save,
+  Shield,
+  Sparkles,
+} from 'lucide-react';
 import {
   applyRecommendedToRules,
   getRecommendedSettings,
@@ -158,19 +167,36 @@ export const RulesEditor: React.FC<RulesEditorProps> = ({
           </div>
         </div>
 
-        {/* 3 pestañas simples */}
+        {/* 3 pestañas intuitivas con icono, nombre y resumen */}
         <div
           role="tablist"
           aria-label="Secciones de configuración"
-          className="mt-4 grid grid-cols-3 gap-1 rounded-xl bg-slate-100 p-1"
+          className="mt-4 grid grid-cols-3 gap-1.5 rounded-xl bg-slate-100 p-1"
         >
           {(
             [
-              { id: 'general', label: '1. Básico' },
-              { id: 'zones', label: `2. Zonas (${zonesConfig.zones.length})` },
-              { id: 'modes', label: `3. Modos (${activeModesCount})` },
+              {
+                id: 'general',
+                label: 'Básico',
+                hint: 'Tiempos y roles',
+                Icon: Clock,
+              },
+              {
+                id: 'zones',
+                label: 'Mapa',
+                hint: `${zonesConfig.zones.length} ${
+                  zonesConfig.zones.length === 1 ? 'zona' : 'zonas'
+                }`,
+                Icon: MapIcon,
+              },
+              {
+                id: 'modes',
+                label: 'Modos',
+                hint: `${activeModesCount} activos`,
+                Icon: Sparkles,
+              },
             ] as const
-          ).map(({ id, label }) => {
+          ).map(({ id, label, hint, Icon }) => {
             const active = activeTab === id;
             return (
               <button
@@ -179,17 +205,31 @@ export const RulesEditor: React.FC<RulesEditorProps> = ({
                 role="tab"
                 aria-selected={active}
                 onClick={() => setActiveTab(id)}
-                className={`min-h-[40px] rounded-lg px-2 py-1.5 text-xs sm:text-sm font-semibold transition-colors whitespace-nowrap ${
+                className={`flex min-h-[50px] flex-col items-center justify-center gap-0.5 rounded-lg px-2 py-1.5 text-center transition-colors ${
                   active
                     ? 'bg-white text-slate-900 shadow-xs'
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
-                {label}
+                <span className="inline-flex items-center gap-1.5 text-xs sm:text-sm font-semibold">
+                  <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                  <span>{label}</span>
+                </span>
+                <span className="text-[10px] sm:text-[11px] font-medium text-slate-500 leading-none">
+                  {hint}
+                </span>
               </button>
             );
           })}
         </div>
+
+        <p className="mt-2.5 text-xs text-slate-500">
+          {activeTab === 'general'
+            ? 'Ajusta cuánto dura la partida, el tiempo para esconderse y cómo se eligen los buscadores.'
+            : activeTab === 'zones'
+            ? 'Mueve las zonas seguras en el mapa y configura cómo se irá cerrando la tormenta.'
+            : 'Activa o desactiva reglas extra como la baliza, pistas, radar, niebla o reto foto.'}
+        </p>
       </div>
 
       {/* Contenido de la pestaña */}
@@ -1320,6 +1360,20 @@ export const RulesEditor: React.FC<RulesEditorProps> = ({
               className="min-h-[44px] rounded-xl border border-slate-200 bg-white px-5 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50 whitespace-nowrap"
             >
               Volver
+            </button>
+          )}
+          {activeTab !== 'modes' && (
+            <button
+              type="button"
+              onClick={() =>
+                setActiveTab(activeTab === 'general' ? 'zones' : 'modes')
+              }
+              className="inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 whitespace-nowrap"
+            >
+              <span>
+                {activeTab === 'general' ? 'Siguiente: Mapa' : 'Siguiente: Modos'}
+              </span>
+              <ChevronRight className="h-4 w-4" aria-hidden="true" />
             </button>
           )}
           <button

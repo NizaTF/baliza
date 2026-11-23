@@ -9,7 +9,6 @@ import {
   BUY_ME_A_COFFEE_URL,
   DEFAULT_PREFERENCES,
   loadPreferences,
-  MapTileStyle,
   savePreferences,
   subscribePreferences,
   triggerHaptic,
@@ -19,10 +18,15 @@ import {
   playPixelUiClick,
   unlockRetroAudio,
 } from '../lib/retroAudio';
+import { PlayerProfile } from '../types/game';
+import { ProfileCustomizer } from './ProfileCustomizer';
 
 interface SettingsPanelProps {
   onClose?: () => void;
   asModal?: boolean;
+  profile?: PlayerProfile;
+  onProfileChange?: (next: PlayerProfile) => void;
+  isInRoom?: boolean;
 }
 
 const THEME_OPTIONS: Array<{ id: AppTheme; label: string }> = [
@@ -36,12 +40,6 @@ const FONT_OPTIONS: Array<{ id: AppFont; label: string; previewFont: string }> =
   { id: 'rounded', label: 'Redonda', previewFont: '"Nunito", sans-serif' },
   { id: 'mono', label: 'Técnica', previewFont: '"JetBrains Mono", monospace' },
   { id: 'serif', label: 'Clásica', previewFont: '"Lora", serif' },
-];
-
-const MAP_STYLE_OPTIONS: Array<{ id: MapTileStyle; label: string }> = [
-  { id: 'standard', label: 'Calles' },
-  { id: 'clean', label: 'Claro' },
-  { id: 'dark', label: 'Oscuro' },
 ];
 
 interface SimpleSwitchProps {
@@ -76,6 +74,9 @@ const SimpleSwitch: React.FC<SimpleSwitchProps> = ({
 export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   onClose,
   asModal = false,
+  profile,
+  onProfileChange,
+  isInRoom = false,
 }) => {
   const [prefs, setPrefs] = useState<AppPreferences>(() => loadPreferences());
 
@@ -86,6 +87,12 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     setPrefs(next);
   };
 
+  const trimmedNameLength = profile ? profile.name.trim().length : 0;
+  const profileNameError =
+    profile && trimmedNameLength < 2 && (isInRoom || trimmedNameLength > 0)
+      ? 'Mínimo 2 letras.'
+      : null;
+
   const content = (
     <div className="clean-card overflow-hidden">
       {/* Cabecera */}
@@ -95,7 +102,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
             Configuración
           </h1>
           <p className="text-xs text-slate-500">
-            Personaliza el aspecto, los sonidos y el mapa en este dispositivo.
+            Personaliza tu perfil, el aspecto y los sonidos en este dispositivo.
           </p>
         </div>
 
@@ -112,6 +119,29 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
       </div>
 
       <div className="divide-y divide-slate-100 px-5 sm:px-6">
+        {/* 0. Perfil de jugador (emoji libre y color personalizado) */}
+        {profile && onProfileChange && (
+          <section className="py-5 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="text-sm font-semibold text-slate-900">
+                Perfil de jugador
+              </h2>
+              <span className="text-[11px] font-medium text-slate-500">
+                {isInRoom
+                  ? 'Se sincroniza automáticamente con la sala'
+                  : 'Guardado en tu dispositivo'}
+              </span>
+            </div>
+
+            <ProfileCustomizer
+              profile={profile}
+              onChange={onProfileChange}
+              defaultExpanded={true}
+              nameError={profileNameError}
+            />
+          </section>
+        )}
+
         {/* 1. Tema y Fuente */}
         <section className="py-5 space-y-4">
           <h2 className="text-sm font-semibold text-slate-900">Apariencia</h2>
@@ -268,34 +298,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
           </div>
         </section>
 
-        {/* 3. Mapa y extras */}
+        {/* 3. Extras */}
         <section className="py-5 space-y-4">
-          <h2 className="text-sm font-semibold text-slate-900">Mapa y extras</h2>
+          <h2 className="text-sm font-semibold text-slate-900">Extras</h2>
 
-          <div className="space-y-1.5">
-            <p className="text-xs font-medium text-slate-500">Estilo del mapa</p>
-            <div className="grid grid-cols-3 gap-1 rounded-xl bg-slate-100 p-1">
-              {MAP_STYLE_OPTIONS.map((opt) => {
-                const active = prefs.mapStyle === opt.id;
-                return (
-                  <button
-                    key={opt.id}
-                    type="button"
-                    onClick={() => updatePrefs({ mapStyle: opt.id })}
-                    className={`min-h-[38px] rounded-lg px-2 text-xs sm:text-sm font-semibold transition-colors ${
-                      active
-                        ? 'bg-white text-slate-900 shadow-xs'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    {opt.label}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between gap-3 pt-1">
+          <div className="flex items-center justify-between gap-3">
             <div>
               <p className="text-sm font-semibold text-slate-900">Vibración</p>
               <p className="text-xs text-slate-500">

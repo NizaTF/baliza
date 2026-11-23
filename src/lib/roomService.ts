@@ -7,7 +7,13 @@ import {
   RoomRecord,
   RoomRules,
 } from '../types/game';
-import { generateRoomCode, generateUuid, getPlayerId } from './storage';
+import {
+  generateRoomCode,
+  generateUuid,
+  getPlayerId,
+  sanitizeHexColor,
+  sanitizePlayerEmoji,
+} from './storage';
 import {
   isSupabaseConfigured,
   supabase,
@@ -81,6 +87,8 @@ export async function createRoom(
 ): Promise<{ room: RoomRecord; player: PlayerRecord }> {
   const playerId = getPlayerId();
   const cleanName = profile.name.trim().slice(0, 12);
+  const cleanEmoji = sanitizePlayerEmoji(profile.emoji);
+  const cleanColor = sanitizeHexColor(profile.color);
 
   if (isSupabaseConfigured && supabase) {
     // Intentar hasta 5 veces generar un código único
@@ -123,8 +131,8 @@ export async function createRoom(
           id: playerId,
           room_id: roomId,
           name: cleanName,
-          emoji: profile.emoji,
-          color: profile.color,
+          emoji: cleanEmoji,
+          color: cleanColor,
           is_host: true,
           joined_at: now,
         })
@@ -167,8 +175,8 @@ export async function createRoom(
     id: playerId,
     room_id: roomId,
     name: cleanName,
-    emoji: profile.emoji,
-    color: profile.color,
+    emoji: cleanEmoji,
+    color: cleanColor,
     is_host: true,
     joined_at: now,
   };
@@ -188,6 +196,8 @@ export async function joinRoom(
   const code = rawCode.trim().toUpperCase();
   const playerId = getPlayerId();
   const cleanName = profile.name.trim().slice(0, 12);
+  const cleanEmoji = sanitizePlayerEmoji(profile.emoji);
+  const cleanColor = sanitizeHexColor(profile.color);
 
   if (code.length < 4 || code.length > 6) {
     throw new Error('No encontramos esa sala. Revisa el código.');
@@ -244,8 +254,8 @@ export async function joinRoom(
           id: playerId,
           room_id: room.id,
           name: cleanName,
-          emoji: profile.emoji,
-          color: profile.color,
+          emoji: cleanEmoji,
+          color: cleanColor,
           is_host: isHost,
           joined_at: now,
         },
@@ -298,8 +308,8 @@ export async function joinRoom(
     id: playerId,
     room_id: room.id,
     name: cleanName,
-    emoji: profile.emoji,
-    color: profile.color,
+    emoji: cleanEmoji,
+    color: cleanColor,
     is_host: room.host_id === playerId,
     joined_at:
       existingIdx >= 0 ? roomPlayers[existingIdx].joined_at : new Date().toISOString(),
@@ -389,14 +399,16 @@ export async function updatePlayerProfileInRoom(
   profile: PlayerProfile
 ): Promise<void> {
   const cleanName = profile.name.trim().slice(0, 12);
+  const cleanEmoji = sanitizePlayerEmoji(profile.emoji);
+  const cleanColor = sanitizeHexColor(profile.color);
 
   if (isSupabaseConfigured && supabase) {
     const { error } = await supabase
       .from('players')
       .update({
         name: cleanName,
-        emoji: profile.emoji,
-        color: profile.color,
+        emoji: cleanEmoji,
+        color: cleanColor,
       })
       .eq('id', playerId)
       .eq('room_id', roomId);
@@ -412,8 +424,8 @@ export async function updatePlayerProfileInRoom(
     list[idx] = {
       ...list[idx],
       name: cleanName,
-      emoji: profile.emoji,
-      color: profile.color,
+      emoji: cleanEmoji,
+      color: cleanColor,
     };
     store.players[roomId] = list;
     writeLocalStore(store);

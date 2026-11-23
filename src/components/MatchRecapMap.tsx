@@ -7,6 +7,7 @@ import {
   loadPreferences,
   subscribePreferences,
 } from '../lib/preferences';
+import { sanitizeHexColor } from '../lib/storage';
 import { formatDurationSec, VALENCIA_CENTER } from '../lib/zones';
 import {
   CaughtRecord,
@@ -247,7 +248,8 @@ export const MatchRecapMap: React.FC<MatchRecapMapProps> = ({
       if (visiblePts.length === 0) return;
 
       const role = roles[p.id] ?? 'hider';
-      const lineColor = role === 'seeker' ? '#E11D48' : p.color || '#059669';
+      const lineColor =
+        role === 'seeker' ? '#E11D48' : sanitizeHexColor(p.color, '#059669');
       const caught = caughtMap[p.id];
 
       if (visiblePts.length >= 2) {
@@ -438,7 +440,8 @@ export const MatchRecapMap: React.FC<MatchRecapMapProps> = ({
             const route = recapRoutes[p.id];
             const distM = route?.totalMeters ?? 0;
             const role = roles[p.id] ?? 'hider';
-            const lineColor = role === 'seeker' ? '#E11D48' : p.color || '#059669';
+            const lineColor =
+              role === 'seeker' ? '#E11D48' : sanitizeHexColor(p.color, '#059669');
             const isHidden = Boolean(hiddenIds[p.id]);
             const caught = caughtMap[p.id];
 

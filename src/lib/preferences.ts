@@ -4,7 +4,7 @@ export const BUY_ME_A_COFFEE_URL = 'https://buymeacoffee.com/nizatf';
 
 export type AppTheme = 'light' | 'warm' | 'dark';
 export type AppFont = 'sans' | 'rounded' | 'mono' | 'serif';
-export type MapTileStyle = 'standard' | 'clean' | 'dark';
+export type MapTileStyle = 'standard';
 
 export interface AppPreferences {
   theme: AppTheme;
@@ -65,12 +65,7 @@ export function loadPreferences(): AppPreferences {
           ? parsed.sfxEnabled
           : DEFAULT_PREFERENCES.sfxEnabled,
       sfxVolume: clampVolume(parsed.sfxVolume, DEFAULT_PREFERENCES.sfxVolume),
-      mapStyle:
-        parsed.mapStyle === 'clean' ||
-        parsed.mapStyle === 'dark' ||
-        parsed.mapStyle === 'standard'
-          ? parsed.mapStyle
-          : DEFAULT_PREFERENCES.mapStyle,
+      mapStyle: 'standard',
       vibrationEnabled:
         typeof parsed.vibrationEnabled === 'boolean'
           ? parsed.vibrationEnabled
@@ -118,22 +113,10 @@ export function subscribePreferences(
   };
 }
 
-export function getMapTileSpec(style: MapTileStyle): {
+export function getMapTileSpec(_style?: MapTileStyle): {
   url: string;
   attribution: string;
 } {
-  if (style === 'clean') {
-    return {
-      url: 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
-      attribution: '&copy; OpenStreetMap &copy; CARTO',
-    };
-  }
-  if (style === 'dark') {
-    return {
-      url: 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-      attribution: '&copy; OpenStreetMap &copy; CARTO',
-    };
-  }
   return {
     url: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
     attribution: '&copy; OpenStreetMap',

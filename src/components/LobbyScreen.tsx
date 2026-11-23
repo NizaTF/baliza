@@ -6,6 +6,7 @@ import {
   LogOut,
   MapPinOff,
   MoreVertical,
+  Pencil,
   Play,
   Share2,
   SlidersHorizontal,
@@ -40,6 +41,7 @@ interface LobbyScreenProps {
   onEditRules: () => void;
   onStartMatch: () => Promise<void>;
   isStartingMatch?: boolean;
+  countdownRemainingSec?: number | null;
   onLeaveRoom: () => Promise<void>;
 }
 
@@ -59,6 +61,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
   onEditRules,
   onStartMatch,
   isStartingMatch = false,
+  countdownRemainingSec = null,
   onLeaveRoom,
 }) => {
   const [copiedCode, setCopiedCode] = useState(false);
@@ -73,7 +76,10 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
   const isHost = room.host_id === currentPlayerId;
   const isLocked = Boolean(room.rules?.roomLocked);
   const locationGuardEnabled = room.rules?.requireLocationGuard ?? true;
-  const canStartMatch = players.length >= 2 && !isStartingMatch;
+  const isCountingDown =
+    countdownRemainingSec !== null && countdownRemainingSec > 0;
+  const canStartMatch =
+    players.length >= 2 && !isStartingMatch && !isCountingDown;
   const isManualRoles = room.rules.roleAssignment === 'manual';
   const manualRoles = room.rules.manualRoles || {};
 
@@ -276,15 +282,29 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
       <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-12">
         {/* Lista de jugadores */}
         <section className="clean-card p-5 sm:p-6 lg:col-span-7">
-          <div className="flex items-baseline justify-between gap-2 pb-3 border-b border-slate-100">
-            <h2 className="font-display text-lg font-bold text-slate-900">
-              Jugadores ({players.length})
-            </h2>
-            {isManualRoles && (
-              <span className="text-xs font-medium text-slate-500">
-                Reparto manual activo
-              </span>
-            )}
+          <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-100">
+            <div>
+              <h2 className="font-display text-lg font-bold text-slate-900">
+                Jugadores ({players.length})
+              </h2>
+              {isManualRoles && (
+                <p className="text-xs font-medium text-slate-500">
+                  Reparto manual activo
+                </p>
+              )}
+            </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                setDraftProfile(profile);
+                setEditingProfile(true);
+              }}
+              className="inline-flex min-h-[36px] items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
+            >
+              <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
+              <span>Editar mi perfil</span>
+            </button>
           </div>
 
           <ul className="divide-y divide-slate-100">
@@ -373,9 +393,10 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                             setDraftProfile(profile);
                             setEditingProfile(true);
                           }}
-                          className="text-xs font-semibold text-slate-600 hover:text-slate-900 px-2 py-1"
+                          className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
                         >
-                          Editar
+                          <Pencil className="h-3 w-3" aria-hidden="true" />
+                          <span>Editar</span>
                         </button>
                       )}
 
@@ -441,7 +462,11 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                 >
                   <Play className="h-5 w-5" aria-hidden="true" />
                   <span>
-                    {isStartingMatch ? 'Empezando...' : 'Empezar partida'}
+                    {isCountingDown
+                      ? `Empezando en ${Math.ceil(countdownRemainingSec!)} s...`
+                      : isStartingMatch
+                      ? 'Empezando...'
+                      : 'Empezar partida'}
                   </span>
                 </button>
 
@@ -454,15 +479,26 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                 <button
                   type="button"
                   onClick={onEditRules}
-                  className="flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
+                  disabled={isCountingDown}
+                  className="flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50 transition-colors"
                 >
                   <SlidersHorizontal className="h-4 w-4" aria-hidden="true" />
                   <span>Cambiar reglas y mapa</span>
                 </button>
               </>
             ) : (
-              <p className="rounded-xl bg-slate-50 px-4 py-3 text-center text-sm text-slate-600">
-                {players.length < 2
+              <p
+                className={`rounded-xl px-4 py-3 text-center text-sm font-medium ${
+                  isCountingDown
+                    ? 'border border-emerald-200 bg-emerald-50 text-emerald-900'
+                    : 'bg-slate-50 text-slate-600'
+                }`}
+              >
+                {isCountingDown
+                  ? `¡El anfitrión inició la cuenta regresiva! Empezando en ${Math.ceil(
+                      countdownRemainingSec!
+                    )} s...`
+                  : players.length < 2
                   ? 'Esperando a que entre al menos 1 amigo más.'
                   : 'Listo. Esperando a que el anfitrión empiece la partida.'}
               </p>

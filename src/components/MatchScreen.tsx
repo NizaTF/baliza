@@ -7,12 +7,12 @@ import {
   Camera,
   CheckCircle2,
   Clock,
-  Coffee,
   Compass,
   Crown,
   Eye,
   Flag,
   Gamepad2,
+  History,
   LocateFixed,
   LogOut,
   Map as MapIcon,
@@ -76,7 +76,6 @@ import {
 import {
   APP_AUTHOR,
   APP_VERSION,
-  BUY_ME_A_COFFEE_URL,
   getMapTileSpec,
   loadPreferences,
   subscribePreferences,
@@ -264,6 +263,8 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
   const [captureToast, setCaptureToast] = useState<string | null>(null);
   const [showEliminationOverlay, setShowEliminationOverlay] = useState(false);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [showEventsModal, setShowEventsModal] = useState(false);
+  const [seenEventsCount, setSeenEventsCount] = useState(0);
   const [resultDismissed, setResultDismissed] = useState(false);
   const [resultWaitDone, setResultWaitDone] = useState(true);
   const [bgKeepAliveOn, setBgKeepAliveOn] = useState(() =>
@@ -2331,6 +2332,192 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
     });
   }, [activeZones]);
 
+  interface MatchHistoryEvent {
+    id: string;
+    atMs: number;
+    kind: 'phase' | 'storm' | 'elimination' | 'beacon' | 'photo' | 'winner';
+    title: string;
+    detail?: string;
+  }
+
+  const matchEvents = useMemo<MatchHistoryEvent[]>(() => {
+    if (!hasMatchStarted) return [];
+    const list: MatchHistoryEvent[] = [];
+
+    list.push({
+      id: 'match-start',
+      atMs: startMs,
+      kind: 'phase',
+      title: 'Partida iniciada',
+      detail:
+        rouletteDurationMs > 0
+          ? 'Sorteo de buscadores en marcha.'
+          : 'Comienza la fase para esconderse.',
+    });
+
+    if (isHuntPhase) {
+      list.push({
+        id: 'hunt-start',
+        atMs: huntStartMs,
+        kind: 'phase',
+        title: '¡Empieza la búsqueda!',
+        detail: 'Los buscadores ya pueden salir a cazar.',
+      });
+    }
+
+    phaseTimeline.forEach((step) => {
+      if (!step.hasNext) return;
+      const nextZone = activeZones[step.idx + 1];
+      if (!nextZone) return;
+
+      if (huntElapsedSec >= step.waitEnd) {
+        list.push({
+          id: `zone-closing-${step.idx}`,
+          atMs: huntStartMs + step.waitEnd * 1000,
+          kind: 'storm',
+          title: `La zona ${step.idx + 1} empezó a cerrarse`,
+          detail: `Reduciéndose hacia Zona ${step.idx + 2} (${formatRadius(
+            nextZone.radius
+          )}).`,
+        });
+      }
+
+      if (huntElapsedSec >= step.shrinkEnd) {
+        list.push({
+          id: `zone-closed-${step.idx}`,
+          atMs: huntStartMs + step.shrinkEnd * 1000,
+          kind: 'storm',
+          title: `La zona ${step.idx + 1} se ha cerrado`,
+          detail:
+            step.idx + 1 === activeZones.length - 1
+              ? `Zona final activa (${formatRadius(nextZone.radius)}).`
+              : `Nueva zona segura activa (${formatRadius(nextZone.radius)}).`,
+        });
+      }
+    });
+
+    if (extractionBeacon && isHuntPhase && huntElapsedSec >= extractionBeacon.unlockAtSec) {
+      list.push({
+        id: 'beacon-unlocked',
+        atMs: huntStartMs + extractionBeacon.unlockAtSec * 1000,
+        kind: 'beacon',
+        title: 'Baliza de extracción desbloqueada',
+        detail: 'Los fugitivos ya pueden acudir al punto verde para escapar.',
+      });
+    }
+
+    if (extractionBeacon?.activatedAt) {
+      const activatorName =
+        players.find((p) => p.id === extractionBeacon.activatedByPlayerId)?.name ||
+        'Un fugitivo';
+      const activatedMs = new Date(extractionBeacon.activatedAt).getTime();
+      if (!Number.isNaN(activatedMs)) {
+        list.push({
+          id: 'beacon-activated',
+          atMs: activatedMs,
+          kind: 'beacon',
+          title: `${activatorName} activó la baliza`,
+          detail: 'Extracción completada.',
+        });
+      }
+    }
+
+    if (photoChallenge?.startedAt) {
+      const photoMs = new Date(photoChallenge.startedAt).getTime();
+      if (!Number.isNaN(photoMs)) {
+        list.push({
+          id: `photo-${photoChallenge.id}`,
+          atMs: photoMs,
+          kind: 'photo',
+          title: `Reto foto lanzado (${photoChallenge.windowSec} s)`,
+          detail: 'Los fugitivos debían hacerse una foto con el cazador.',
+        });
+      }
+    }
+
+    Object.entries(caughtMap).forEach(([targetId, rec]) => {
+      const targetName =
+        players.find((p) => p.id === targetId)?.name || 'Un jugador';
+      const parsedAt = new Date(rec.at).getTime();
+      const atMs = Number.isNaN(parsedAt) ? syncedNowMs : parsedAt;
+
+      let title = `${targetName} fue eliminado`;
+      let detail = 'Eliminado durante la ronda.';
+
+      if (rec.byPlayerId === 'storm') {
+        title = `${targetName} fue eliminado por la tormenta`;
+        detail = 'Pasó demasiado tiempo fuera de la zona segura.';
+      } else if (rec.byPlayerId === 'anticheat') {
+        title = `${targetName} fue eliminado`;
+        detail = 'Desactivó la ubicación GPS durante la partida.';
+      } else if (rec.byPlayerId === 'photo') {
+        title = `${targetName} fue eliminado`;
+        detail = 'No completó el reto foto a tiempo.';
+      } else {
+        const hunterName =
+          players.find((p) => p.id === rec.byPlayerId)?.name || 'Un buscador';
+        title = `${targetName} fue eliminado por ${hunterName}`;
+        detail = 'Capturado en la caza.';
+      }
+
+      list.push({
+        id: `elim-${targetId}-${rec.at}`,
+        atMs,
+        kind: 'elimination',
+        title,
+        detail,
+      });
+    });
+
+    if (matchWinner) {
+      const endedMs = match?.endedAt ? new Date(match.endedAt).getTime() : NaN;
+      list.push({
+        id: `winner-${matchWinner}`,
+        atMs: Number.isNaN(endedMs) ? syncedNowMs : endedMs,
+        kind: 'winner',
+        title:
+          matchWinner === 'hiders'
+            ? '¡Ganan los Fugitivos!'
+            : '¡Ganan los Buscadores!',
+        detail:
+          matchWinReason === 'beacon_extracted'
+            ? 'Se activó la baliza de extracción.'
+            : matchWinReason === 'time_expired'
+            ? 'Se agotó el tiempo de la partida.'
+            : 'Todos los fugitivos fueron eliminados.',
+      });
+    }
+
+    return list.sort((a, b) => b.atMs - a.atMs);
+  }, [
+    hasMatchStarted,
+    startMs,
+    rouletteDurationMs,
+    isHuntPhase,
+    huntStartMs,
+    phaseTimeline,
+    activeZones,
+    huntElapsedSec,
+    extractionBeacon,
+    photoChallenge,
+    caughtMap,
+    players,
+    syncedNowMs,
+    matchWinner,
+    matchWinReason,
+    match?.endedAt,
+  ]);
+
+  useEffect(() => {
+    if (showEventsModal) {
+      setSeenEventsCount(matchEvents.length);
+    }
+  }, [showEventsModal, matchEvents.length]);
+
+  const unreadEventsCount = showEventsModal
+    ? 0
+    : Math.max(0, matchEvents.length - seenEventsCount);
+
   const allHidersCaught =
     hiderStats.totalHiders > 0 && hiderStats.activeHiders === 0;
 
@@ -2461,6 +2648,20 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
                       )}`}
                 </p>
               </div>
+              <button
+                type="button"
+                onClick={() => setShowEventsModal(true)}
+                aria-label={`Ver historial de eventos (${matchEvents.length})`}
+                title="Historial de eventos"
+                className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 transition-colors"
+              >
+                <History className="h-4 w-4" aria-hidden="true" />
+                {unreadEventsCount > 0 && (
+                  <span className="absolute -top-1 -right-1 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-rose-600 px-1 font-mono text-[10px] font-bold text-white">
+                    {unreadEventsCount > 9 ? '9+' : unreadEventsCount}
+                  </span>
+                )}
+              </button>
             </div>
           </div>
 
@@ -3371,6 +3572,15 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
                       )}
                       <button
                         type="button"
+                        onClick={() => setShowEventsModal(true)}
+                        className="flex w-full min-h-[42px] items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                      >
+                        <History className="h-4 w-4 shrink-0" aria-hidden="true" />
+                        <span>Historial de eventos ({matchEvents.length})</span>
+                      </button>
+
+                      <button
+                        type="button"
                         onClick={() => setShowSettingsModal(true)}
                         className="flex w-full min-h-[42px] items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
                       >
@@ -3378,20 +3588,13 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
                         <span>Configuración (tema, sonido, fuente)</span>
                       </button>
 
-                      <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100 text-[11px] text-slate-500">
+                      <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-100 text-[11px] text-slate-500">
                         <span>
-                          Baliza <strong className="font-mono text-slate-700">v{APP_VERSION}</strong> · por{' '}
-                          <strong className="text-slate-700">{APP_AUTHOR}</strong>
+                          Baliza <strong className="font-mono text-slate-700">v{APP_VERSION}</strong>
                         </span>
-                        <a
-                          href={BUY_ME_A_COFFEE_URL}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1 text-[11px] font-semibold text-amber-950 hover:bg-amber-100"
-                        >
-                          <Coffee className="h-3 w-3 text-amber-700" aria-hidden="true" />
-                          <span>Buy Me a Coffee</span>
-                        </a>
+                        <span>
+                          Creado por <strong className="text-slate-700">{APP_AUTHOR}</strong>
+                        </span>
                       </div>
                     </div>
                   </div>
@@ -3625,6 +3828,105 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
             (p) => p.id !== currentPlayerId && match?.roles?.[p.id] === 'seeker'
           )}
         />
+      )}
+      {showEventsModal && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Historial de eventos de la partida"
+          className="fixed inset-0 z-[54] flex items-end sm:items-center justify-center bg-slate-900/55 p-3 sm:p-4 backdrop-blur-xs"
+        >
+          <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white shadow-xl overflow-hidden flex flex-col max-h-[82dvh]">
+            <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-5 py-4">
+              <div>
+                <h2 className="font-display text-lg font-bold text-slate-900">
+                  Historial de eventos
+                </h2>
+                <p className="text-xs text-slate-500">
+                  {matchEvents.length}{' '}
+                  {matchEvents.length === 1
+                    ? 'suceso registrado'
+                    : 'sucesos registrados'}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowEventsModal(false)}
+                aria-label="Cerrar historial de eventos"
+                className="flex h-9 w-9 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-5 py-3">
+              {matchEvents.length === 0 ? (
+                <p className="py-8 text-center text-sm text-slate-500">
+                  Todavía no hay eventos registrados en esta partida.
+                </p>
+              ) : (
+                <ul className="divide-y divide-slate-100">
+                  {matchEvents.map((ev) => {
+                    const relSec = Math.max(
+                      0,
+                      Math.floor((ev.atMs - startMs) / 1000)
+                    );
+                    return (
+                      <li
+                        key={ev.id}
+                        className="flex items-start justify-between gap-3 py-3"
+                      >
+                        <div className="flex min-w-0 items-start gap-3">
+                          <div
+                            className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl ${
+                              ev.kind === 'elimination'
+                                ? 'bg-rose-50 text-rose-600'
+                                : ev.kind === 'storm'
+                                ? 'bg-violet-50 text-violet-700'
+                                : ev.kind === 'beacon'
+                                ? 'bg-emerald-50 text-emerald-700'
+                                : ev.kind === 'photo' || ev.kind === 'winner'
+                                ? 'bg-amber-50 text-amber-700'
+                                : 'bg-slate-100 text-slate-700'
+                            }`}
+                          >
+                            {ev.kind === 'elimination' ? (
+                              <PixelSkull className="h-4 w-4" />
+                            ) : ev.kind === 'storm' ? (
+                              <Compass className="h-4 w-4" aria-hidden="true" />
+                            ) : ev.kind === 'beacon' ? (
+                              <Radio className="h-4 w-4" aria-hidden="true" />
+                            ) : ev.kind === 'photo' ? (
+                              <Camera className="h-4 w-4" aria-hidden="true" />
+                            ) : ev.kind === 'winner' ? (
+                              <Trophy className="h-4 w-4" aria-hidden="true" />
+                            ) : (
+                              <Clock className="h-4 w-4" aria-hidden="true" />
+                            )}
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-sm font-semibold text-slate-900 leading-snug">
+                              {ev.title}
+                            </p>
+                            {ev.detail && (
+                              <p className="mt-0.5 text-xs text-slate-500">
+                                {ev.detail}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+
+                        <span className="shrink-0 font-mono text-[11px] font-semibold tabular-nums text-slate-500 pt-0.5">
+                          {formatDurationSec(relSec)}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+          </div>
+        </div>
       )}
       {showSettingsModal && (
         <SettingsPanel asModal onClose={() => setShowSettingsModal(false)} />

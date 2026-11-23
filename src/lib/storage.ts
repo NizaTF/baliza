@@ -137,6 +137,53 @@ export function getPlayerId(): string {
   }
 }
 
+export function extractEmojiGraphemes(input: string): string[] {
+  const cleaned = input.replace(/[\u0000-\u001F\u007F]/g, '').trim();
+  if (!cleaned) return [];
+  const SegmenterCtor = (
+    Intl as unknown as {
+      Segmenter?: new (
+        locales?: string,
+        options?: { granularity: 'grapheme' }
+      ) => { segment: (input: string) => Iterable<{ segment: string }> };
+    }
+  ).Segmenter;
+  if (typeof SegmenterCtor === 'function') {
+    const seg = new SegmenterCtor('es', { granularity: 'grapheme' });
+    return Array.from(seg.segment(cleaned), (s) => s.segment).filter(
+      (s) => s.trim().length > 0
+    );
+  }
+  return Array.from(cleaned).filter((s) => s.trim().length > 0);
+}
+
+export function sanitizePlayerEmoji(
+  raw: unknown,
+  fallback: string = EMOJI_PALETTE[0]
+): string {
+  if (typeof raw !== 'string') return fallback;
+  const graphemes = extractEmojiGraphemes(raw);
+  if (graphemes.length === 0) return fallback;
+  return graphemes[0].slice(0, 24);
+}
+
+export function sanitizeHexColor(
+  raw: unknown,
+  fallback: string = ACCENT_COLORS[0].hex
+): string {
+  if (typeof raw !== 'string') return fallback;
+  const trimmed = raw.trim();
+  if (/^#[0-9a-f]{6}$/i.test(trimmed)) {
+    return trimmed.toUpperCase();
+  }
+  const shortMatch = trimmed.match(/^#([0-9a-f]{3})$/i);
+  if (shortMatch) {
+    const [r, g, b] = shortMatch[1].split('');
+    return `#${r}${r}${g}${g}${b}${b}`.toUpperCase();
+  }
+  return fallback;
+}
+
 export function getDefaultProfile(): PlayerProfile {
   return {
     name: '',
@@ -152,15 +199,8 @@ export function loadProfile(): PlayerProfile {
     const parsed = JSON.parse(raw) as Partial<PlayerProfile>;
     return {
       name: typeof parsed.name === 'string' ? parsed.name.slice(0, 12) : '',
-      emoji:
-        typeof parsed.emoji === 'string' && EMOJI_PALETTE.includes(parsed.emoji)
-          ? parsed.emoji
-          : EMOJI_PALETTE[0],
-      color:
-        typeof parsed.color === 'string' &&
-        ACCENT_COLORS.some((c) => c.hex === parsed.color)
-          ? parsed.color
-          : ACCENT_COLORS[0].hex,
+      emoji: sanitizePlayerEmoji(parsed.emoji, EMOJI_PALETTE[0]),
+      color: sanitizeHexColor(parsed.color, ACCENT_COLORS[0].hex),
     };
   } catch {
     return getDefaultProfile();
@@ -173,8 +213,8 @@ export function saveProfile(profile: PlayerProfile): void {
       PROFILE_STORAGE_KEY,
       JSON.stringify({
         name: profile.name.slice(0, 12),
-        emoji: profile.emoji,
-        color: profile.color,
+        emoji: sanitizePlayerEmoji(profile.emoji, EMOJI_PALETTE[0]),
+        color: sanitizeHexColor(profile.color, ACCENT_COLORS[0].hex),
       })
     );
   } catch {

@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Coffee, Settings } from 'lucide-react';
+import { Settings } from 'lucide-react';
 import { HomeScreen } from './components/HomeScreen';
 import { KickedOverlay } from './components/KickedOverlay';
 import { LobbyScreen } from './components/LobbyScreen';
+import { LobbyToastHost, LobbyToastItem } from './components/LobbyToastHost';
 import { MatchScreen } from './components/MatchScreen';
 import { OfflineIndicator, PWAInstallButton } from './components/PWAControls';
 import { PixelBalizaMark } from './components/PixelIcons';
@@ -36,14 +37,13 @@ import {
 import {
   playPixelUiClick,
   playPlayerKickedSting,
+  playSeekerCountdownBeep,
   unlockRetroAudio,
 } from './lib/retroAudio';
 import {
-  APP_AUTHOR,
-  APP_VERSION,
-  BUY_ME_A_COFFEE_URL,
   applyPreferencesToDocument,
   loadPreferences,
+  triggerHaptic,
 } from './lib/preferences';
 import {
   getPlayerId,
@@ -104,9 +104,23 @@ export default function App() {
     playerColor: string;
     roomCode: string;
   } | null>(null);
+  const [lobbyToasts, setLobbyToasts] = useState<LobbyToastItem[]>([]);
+  const [lobbyCountdownRemainingSec, setLobbyCountdownRemainingSec] = useState<
+    number | null
+  >(null);
 
   const leavingSelfRef = useRef(false);
   const kickedHandledRef = useRef(false);
+  const countdownTimerRef = useRef<number | null>(null);
+  const profileSyncTimerRef = useRef<number | null>(null);
+  const toastTimersRef = useRef<Record<string, number>>({});
+  const knownLobbyPlayersRef = useRef<{
+    roomId: string | null;
+    ids: Set<string>;
+    initialized: boolean;
+  }>({ roomId: null, ids: new Set(), initialized: false });
+  const lastCountdownBeepSecRef = useRef<number | null>(null);
+  const lastCountdownStartedAtRef = useRef<string | null>(null);
   const kickedContextRef = useRef({
     name: profile.name,
     emoji: profile.emoji,
@@ -121,6 +135,28 @@ export default function App() {
   };
   const locGuardBroadcasterRef = useRef<((s: LocationGuardStatus) => void) | null>(
     null
+  );
+
+  const dismissLobbyToast = useCallback((id: string) => {
+    const timer = toastTimersRef.current[id];
+    if (timer) {
+      window.clearTimeout(timer);
+      delete toastTimersRef.current[id];
+    }
+    setLobbyToasts((prev) => prev.filter((item) => item.id !== id));
+  }, []);
+
+  const pushLobbyToast = useCallback(
+    (toast: Omit<LobbyToastItem, 'id'>, durationMs = 4200) => {
+      const id = `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      setLobbyToasts((prev) => [...prev.slice(-2), { ...toast, id }]);
+      const timer = window.setTimeout(() => {
+        delete toastTimersRef.current[id];
+        setLobbyToasts((prev) => prev.filter((item) => item.id !== id));
+      }, durationMs);
+      toastTimersRef.current[id] = timer;
+    },
+    []
   );
 
   const triggerKickedOut = useCallback(() => {
@@ -400,6 +436,117 @@ export default function App() {
     locGuardBroadcasterRef.current?.(status);
   }, []);
 
+  // Avisos visuales (toast) cuando un jugador se une al lobby
+  useEffect(() => {
+    const currentRoomId = room?.id ?? null;
+    if (!currentRoomId || isMatchActive) {
+      if (!currentRoomId) {
+        knownLobbyPlayersRef.current = {
+          roomId: null,
+          ids: new Set(),
+          initialized: false,
+        };
+        setLobbyToasts([]);
+      }
+      return;
+    }
+
+    const tracker = knownLobbyPlayersRef.current;
+    if (tracker.roomId !== currentRoomId) {
+      knownLobbyPlayersRef.current = {
+        roomId: currentRoomId,
+        ids: new Set(players.map((p) => p.id)),
+        initialized: players.length > 0,
+      };
+      return;
+    }
+
+    if (!tracker.initialized) {
+      if (players.length > 0) {
+        tracker.ids = new Set(players.map((p) => p.id));
+        tracker.initialized = true;
+      }
+      return;
+    }
+
+    const nextIds = new Set(players.map((p) => p.id));
+    players.forEach((p) => {
+      if (!tracker.ids.has(p.id) && p.id !== playerId) {
+        pushLobbyToast({
+          type: 'join',
+          title: `${p.emoji} ${p.name} se ha unido a la sala`,
+          description: `Ya sois ${players.length} en la sala`,
+        });
+        playPixelUiClick('confirm');
+        triggerHaptic(12);
+      }
+    });
+    tracker.ids = nextIds;
+  }, [room?.id, isMatchActive, players, playerId, pushLobbyToast]);
+
+  // Cuenta regresiva visual sincronizada antes de entrar a partida
+  const lobbyCountdown = room?.rules?.lobbyCountdown ?? null;
+  useEffect(() => {
+    if (!room?.id || isMatchActive || !lobbyCountdown?.startedAt) {
+      setLobbyCountdownRemainingSec(null);
+      lastCountdownBeepSecRef.current = null;
+      lastCountdownStartedAtRef.current = null;
+      return;
+    }
+
+    const startMs = new Date(lobbyCountdown.startedAt).getTime();
+    const durationSec = Math.max(1, lobbyCountdown.durationSec || 3);
+    if (Number.isNaN(startMs)) {
+      setLobbyCountdownRemainingSec(null);
+      return;
+    }
+
+    if (lastCountdownStartedAtRef.current !== lobbyCountdown.startedAt) {
+      lastCountdownStartedAtRef.current = lobbyCountdown.startedAt;
+      triggerHaptic([16, 40, 16]);
+    }
+
+    const updateTick = () => {
+      const syncedNow = Date.now() + clockOffsetMs;
+      const elapsedSec = (syncedNow - startMs) / 1000;
+      const remaining = durationSec - elapsedSec;
+
+      if (remaining <= 0 || elapsedSec > durationSec + 4) {
+        setLobbyCountdownRemainingSec(null);
+        return false;
+      }
+
+      setLobbyCountdownRemainingSec(remaining);
+      const ceilSec = Math.ceil(remaining);
+      if (ceilSec > 0 && lastCountdownBeepSecRef.current !== ceilSec) {
+        lastCountdownBeepSecRef.current = ceilSec;
+        playSeekerCountdownBeep(ceilSec);
+      }
+      return true;
+    };
+
+    if (!updateTick()) return;
+
+    const timer = window.setInterval(() => {
+      if (!updateTick()) {
+        window.clearInterval(timer);
+      }
+    }, 150);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [room?.id, isMatchActive, lobbyCountdown?.startedAt, lobbyCountdown?.durationSec, clockOffsetMs]);
+
+  useEffect(() => {
+    return () => {
+      if (countdownTimerRef.current) {
+        window.clearTimeout(countdownTimerRef.current);
+      }
+      Object.values(toastTimersRef.current).forEach((t) => window.clearTimeout(t));
+    };
+  }, []);
+
   // Sincronización del estado de ubicación GPS de todos los jugadores de la sala
   useEffect(() => {
     if (!room?.id) {
@@ -560,107 +707,164 @@ export default function App() {
       setGlobalNotice('Se necesitan mínimo 2 jugadores para iniciar la partida.');
       return;
     }
+    if (isStartingMatch || room.rules.lobbyCountdown?.startedAt) return;
 
+    const targetRoomId = room.id;
+    const countdownDurationSec = 3;
     setIsStartingMatch(true);
-    try {
-      const roles: Record<string, PlayerRole> = {};
-      let seekerOrder: string[] = [];
-      let rouletteDurationMs = 0;
 
-      if (room.rules.roleAssignment === 'manual') {
-        const manual = room.rules.manualRoles || {};
-        players.forEach((p) => {
-          roles[p.id] = manual[p.id] === 'seeker' ? 'seeker' : 'hider';
-        });
-        const hasSeeker = Object.values(roles).some((r) => r === 'seeker');
-        const hasHider = Object.values(roles).some((r) => r === 'hider');
-        if (!hasSeeker) {
-          roles[players[0].id] = 'seeker';
+    const launchMatchNow = async () => {
+      try {
+        const latest = await fetchRoomState(targetRoomId);
+        const latestRoom = latest?.room ?? room;
+        const activePlayers = latest?.players?.length ? latest.players : players;
+
+        if (!latestRoom || activePlayers.length < 2) {
+          if (latestRoom) {
+            await updateRoomRules(targetRoomId, {
+              ...latestRoom.rules,
+              lobbyCountdown: null,
+            });
+          }
+          setGlobalNotice('Se necesitan mínimo 2 jugadores para iniciar la partida.');
+          setIsStartingMatch(false);
+          return;
         }
-        if (!hasHider) {
-          roles[players[players.length - 1].id] = 'hider';
+
+        const roles: Record<string, PlayerRole> = {};
+        let seekerOrder: string[] = [];
+        let rouletteDurationMs = 0;
+
+        if (latestRoom.rules.roleAssignment === 'manual') {
+          const manual = latestRoom.rules.manualRoles || {};
+          activePlayers.forEach((p) => {
+            roles[p.id] = manual[p.id] === 'seeker' ? 'seeker' : 'hider';
+          });
+          const hasSeeker = Object.values(roles).some((r) => r === 'seeker');
+          const hasHider = Object.values(roles).some((r) => r === 'hider');
+          if (!hasSeeker) {
+            roles[activePlayers[0].id] = 'seeker';
+          }
+          if (!hasHider) {
+            roles[activePlayers[activePlayers.length - 1].id] = 'hider';
+          }
+          seekerOrder = activePlayers
+            .filter((p) => roles[p.id] === 'seeker')
+            .map((p) => p.id);
+        } else {
+          const ids = activePlayers.map((p) => p.id);
+          for (let i = ids.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [ids[i], ids[j]] = [ids[j], ids[i]];
+          }
+          const maxSeekers = Math.max(1, ids.length - 1);
+          const randomMax = Math.max(
+            1,
+            Math.min(maxSeekers, Math.max(2, Math.round(ids.length / 3)))
+          );
+          const targetSeekers =
+            latestRoom.rules.seekersCount === 'random'
+              ? 1 + Math.floor(Math.random() * randomMax)
+              : Math.max(
+                  1,
+                  Math.min(Number(latestRoom.rules.seekersCount) || 1, maxSeekers)
+                );
+
+          ids.forEach((id, index) => {
+            roles[id] = index < targetSeekers ? 'seeker' : 'hider';
+          });
+          seekerOrder = ids.slice(0, targetSeekers);
+          rouletteDurationMs =
+            seekerOrder.length * ROULETTE_ROUND_MS + ROULETTE_FINAL_MS;
         }
-        seekerOrder = players
-          .filter((p) => roles[p.id] === 'seeker')
-          .map((p) => p.id);
-      } else {
-        const ids = players.map((p) => p.id);
-        for (let i = ids.length - 1; i > 0; i--) {
-          const j = Math.floor(Math.random() * (i + 1));
-          [ids[i], ids[j]] = [ids[j], ids[i]];
-        }
-        const maxSeekers = Math.max(1, ids.length - 1);
-        const randomMax = Math.max(1, Math.min(maxSeekers, Math.max(2, Math.round(ids.length / 3))));
-        const targetSeekers =
-          room.rules.seekersCount === 'random'
-            ? 1 + Math.floor(Math.random() * randomMax)
-            : Math.max(1, Math.min(Number(room.rules.seekersCount) || 1, maxSeekers));
 
-        ids.forEach((id, index) => {
-          roles[id] = index < targetSeekers ? 'seeker' : 'hider';
-        });
-        seekerOrder = ids.slice(0, targetSeekers);
-        rouletteDurationMs =
-          seekerOrder.length * ROULETTE_ROUND_MS + ROULETTE_FINAL_MS;
-      }
+        const normalizedZones = normalizeZonesConfig(latestRoom.rules);
+        const first = normalizedZones.zones[0];
+        const activeZones =
+          normalizedZones.mode === 'random'
+            ? generateRandomZones({
+                anchorLat: first?.lat ?? VALENCIA_CENTER.lat,
+                anchorLng: first?.lng ?? VALENCIA_CENTER.lng,
+                count: normalizedZones.zones.length,
+                initialRadius: first?.radius ?? 900,
+                defaultWaitSec: first?.waitTimeSec ?? 90,
+                defaultShrinkSec: first?.shrinkTimeSec ?? 45,
+              })
+            : normalizedZones.zones;
 
-      const normalizedZones = normalizeZonesConfig(room.rules);
-      const first = normalizedZones.zones[0];
-      const activeZones =
-        normalizedZones.mode === 'random'
-          ? generateRandomZones({
-              anchorLat: first?.lat ?? VALENCIA_CENTER.lat,
-              anchorLng: first?.lng ?? VALENCIA_CENTER.lng,
-              count: normalizedZones.zones.length,
-              initialRadius: first?.radius ?? 900,
-              defaultWaitSec: first?.waitTimeSec ?? 90,
-              defaultShrinkSec: first?.shrinkTimeSec ?? 45,
-            })
-          : normalizedZones.zones;
+        const hideTimeSec = latestRoom.rules.hideTimeSec ?? 30;
+        const beaconVictoryEnabled = latestRoom.rules.beaconVictoryEnabled ?? true;
+        const beaconRadiusM = latestRoom.rules.modifiers?.beaconRadiusM ?? 25;
+        const extractionBeacon = beaconVictoryEnabled
+          ? generateExtractionBeacon(
+              activeZones,
+              latestRoom.rules.roundDuration || 30,
+              beaconRadiusM
+            )
+          : null;
 
-      const hideTimeSec = room.rules.hideTimeSec ?? 30;
-      const beaconVictoryEnabled = room.rules.beaconVictoryEnabled ?? true;
-      const beaconRadiusM = room.rules.modifiers?.beaconRadiusM ?? 25;
-      const extractionBeacon = beaconVictoryEnabled
-        ? generateExtractionBeacon(
+        void startBackgroundKeepAlive();
+
+        const nextRules: RoomRules = {
+          ...latestRoom.rules,
+          lobbyCountdown: null,
+          matchState: {
+            active: true,
+            // Margen de 950ms para que el evento Realtime llegue a todos los dispositivos antes de t=0
+            startedAt: new Date(Date.now() + 950).toISOString(),
+            roles,
             activeZones,
-            room.rules.roundDuration || 30,
-            beaconRadiusM
-          )
-        : null;
+            caught: {},
+            rouletteDurationMs,
+            seekerOrder,
+            hideTimeSec,
+            extractionBeacon,
+            winner: null,
+            winReason: null,
+            endedAt: null,
+          },
+        };
 
+        const updated = await updateRoomRules(targetRoomId, nextRules);
+        setRoom(updated);
+        setView('lobby');
+      } catch (err) {
+        setGlobalNotice(
+          err instanceof Error
+            ? err.message
+            : 'No se pudo iniciar la partida. Inténtalo de nuevo.'
+        );
+      } finally {
+        setIsStartingMatch(false);
+      }
+    };
+
+    try {
       void startBackgroundKeepAlive();
-
-      const nextRules: RoomRules = {
+      const countdownRules: RoomRules = {
         ...room.rules,
-        matchState: {
-          active: true,
-          // Margen de 950ms para que el evento Realtime llegue a todos los dispositivos antes de t=0
-          startedAt: new Date(Date.now() + 950).toISOString(),
-          roles,
-          activeZones,
-          caught: {},
-          rouletteDurationMs,
-          seekerOrder,
-          hideTimeSec,
-          extractionBeacon,
-          winner: null,
-          winReason: null,
-          endedAt: null,
+        lobbyCountdown: {
+          startedAt: new Date(Date.now() + 200).toISOString(),
+          durationSec: countdownDurationSec,
         },
       };
-
-      const updated = await updateRoomRules(room.id, nextRules);
+      const updated = await updateRoomRules(targetRoomId, countdownRules);
       setRoom(updated);
-      setView('lobby');
+
+      if (countdownTimerRef.current) {
+        window.clearTimeout(countdownTimerRef.current);
+      }
+      countdownTimerRef.current = window.setTimeout(() => {
+        countdownTimerRef.current = null;
+        void launchMatchNow();
+      }, countdownDurationSec * 1000);
     } catch (err) {
+      setIsStartingMatch(false);
       setGlobalNotice(
         err instanceof Error
           ? err.message
-          : 'No se pudo iniciar la partida. Inténtalo de nuevo.'
+          : 'No se pudo iniciar la cuenta regresiva. Inténtalo de nuevo.'
       );
-    } finally {
-      setIsStartingMatch(false);
     }
   };
 
@@ -1012,6 +1216,10 @@ export default function App() {
   };
 
   const handleUpdateProfileInRoom = async (nextProfile: PlayerProfile) => {
+    if (profileSyncTimerRef.current) {
+      window.clearTimeout(profileSyncTimerRef.current);
+      profileSyncTimerRef.current = null;
+    }
     handleProfileChange(nextProfile);
     if (!room) return;
     await updatePlayerProfileInRoom(playerId, room.id, nextProfile);
@@ -1029,7 +1237,44 @@ export default function App() {
     );
   };
 
+  const handleSettingsProfileChange = (nextProfile: PlayerProfile) => {
+    handleProfileChange(nextProfile);
+    if (!room || nextProfile.name.trim().length < 2) return;
+    const roomId = room.id;
+    setPlayers((prev) =>
+      prev.map((p) =>
+        p.id === playerId
+          ? {
+              ...p,
+              name: nextProfile.name.trim().slice(0, 12),
+              emoji: nextProfile.emoji,
+              color: nextProfile.color,
+            }
+          : p
+      )
+    );
+    if (profileSyncTimerRef.current) {
+      window.clearTimeout(profileSyncTimerRef.current);
+    }
+    profileSyncTimerRef.current = window.setTimeout(() => {
+      profileSyncTimerRef.current = null;
+      void updatePlayerProfileInRoom(playerId, roomId, nextProfile).catch(
+        () => {}
+      );
+    }, 250);
+  };
+
   const handleLeaveRoom = async () => {
+    if (countdownTimerRef.current) {
+      window.clearTimeout(countdownTimerRef.current);
+      countdownTimerRef.current = null;
+    }
+    if (profileSyncTimerRef.current) {
+      window.clearTimeout(profileSyncTimerRef.current);
+      profileSyncTimerRef.current = null;
+    }
+    setIsStartingMatch(false);
+    setLobbyCountdownRemainingSec(null);
     if (!room) {
       setView('home');
       return;
@@ -1167,7 +1412,12 @@ export default function App() {
         )}
 
         {showSettings ? (
-          <SettingsPanel onClose={() => setShowSettings(false)} />
+          <SettingsPanel
+            onClose={() => setShowSettings(false)}
+            profile={profile}
+            onProfileChange={handleSettingsProfileChange}
+            isInRoom={Boolean(room)}
+          />
         ) : (
           <>
             {view === 'home' && (
@@ -1214,6 +1464,7 @@ export default function App() {
                 onEditRules={() => setView('host_rules')}
                 onStartMatch={handleStartMatch}
                 isStartingMatch={isStartingMatch}
+                countdownRemainingSec={lobbyCountdownRemainingSec}
                 onLeaveRoom={handleLeaveRoom}
               />
             )}
@@ -1221,33 +1472,13 @@ export default function App() {
         )}
       </main>
 
-      <footer className="border-t border-slate-200 bg-white/85 px-4 py-3.5 sm:px-6">
-        <div className="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-3 text-xs text-slate-500">
-          <div className="flex flex-wrap items-center gap-2 font-medium">
-            <span className="font-semibold text-slate-700">Baliza</span>
-            <span aria-hidden="true">·</span>
-            <span className="font-mono font-semibold text-slate-700">
-              v{APP_VERSION}
-            </span>
-            <span aria-hidden="true">·</span>
-            <span>
-              Creado por{' '}
-              <strong className="font-semibold text-slate-700">
-                {APP_AUTHOR}
-              </strong>
-            </span>
-          </div>
-          <a
-            href={BUY_ME_A_COFFEE_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1.5 rounded-xl border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-950 transition-colors hover:bg-amber-100"
-          >
-            <Coffee className="h-3.5 w-3.5 text-amber-700" aria-hidden="true" />
-            <span>Buy Me a Coffee</span>
-          </a>
-        </div>
-      </footer>
+      {room && (
+        <LobbyToastHost
+          toasts={lobbyToasts}
+          countdownRemainingSec={lobbyCountdownRemainingSec}
+          onDismiss={dismissLobbyToast}
+        />
+      )}
 
       <OfflineIndicator />
       {kickedInfo && (

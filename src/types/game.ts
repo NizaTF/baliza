@@ -153,6 +153,10 @@ export interface RoomRules {
   roomLocked?: boolean;
   zonesConfig?: ZonesConfig;
   manualRoles?: Record<string, PlayerRole>;
+  lobbyCountdown?: {
+    startedAt: string;
+    durationSec: number;
+  } | null;
   matchState?: MatchState | null;
   modifiers: RoomModifiers;
 }
