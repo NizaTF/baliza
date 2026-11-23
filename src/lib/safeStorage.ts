@@ -15,6 +15,10 @@ const PERSISTED_KEYS = new Set<string>([
   'escondite_urbano_active_session',
 ]);
 
+function isPersistedKey(key: string): boolean {
+  return PERSISTED_KEYS.has(key) || key.startsWith('baliza_elim_seen_');
+}
+
 let cachedLocalWorks: boolean | null = null;
 let cachedSessionWorks: boolean | null = null;
 
@@ -192,7 +196,7 @@ export function safeLocalGet(key: string): string | null {
   const memVal = memoryLocal.get(key);
   if (memVal !== undefined) return memVal;
 
-  if (PERSISTED_KEYS.has(key)) {
+  if (isPersistedKey(key)) {
     const wn = readWindowNameStore();
     if (typeof wn.local[key] === 'string') {
       memoryLocal.set(key, wn.local[key]);
@@ -213,7 +217,7 @@ export function safeLocalSet(key: string, value: string): void {
       cachedLocalWorks = false;
     }
   }
-  if (PERSISTED_KEYS.has(key)) {
+  if (isPersistedKey(key)) {
     if (!savedToWebStorage) {
       writeWindowNameStore((payload) => {
         payload.local[key] = value;
@@ -232,7 +236,7 @@ export function safeLocalRemove(key: string): void {
       cachedLocalWorks = false;
     }
   }
-  if (PERSISTED_KEYS.has(key)) {
+  if (isPersistedKey(key)) {
     writeWindowNameStore((payload) => {
       delete payload.local[key];
     });
@@ -255,7 +259,7 @@ export function safeSessionGet(key: string): string | null {
   const memVal = memorySession.get(key);
   if (memVal !== undefined) return memVal;
 
-  if (PERSISTED_KEYS.has(key)) {
+  if (isPersistedKey(key)) {
     const wn = readWindowNameStore();
     if (typeof wn.session[key] === 'string') {
       memorySession.set(key, wn.session[key]);

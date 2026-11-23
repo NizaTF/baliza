@@ -80,6 +80,7 @@ import {
   loadPreferences,
   subscribePreferences,
 } from '../lib/preferences';
+import { safeSessionGet, safeSessionSet } from '../lib/safeStorage';
 import { EliminationOverlay } from './EliminationOverlay';
 import { MatchResultOverlay } from './MatchResultOverlay';
 import { getPixelSkullSvgHtml, PixelSkull } from './PixelSkull';
@@ -339,6 +340,7 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
   const waitTriggeredForEndRef = useRef<string | null>(null);
   const waitDeadlineMsRef = useRef<number | null>(null);
   const seenCaughtIdsRef = useRef<Set<string>>(new Set(Object.keys(caughtMap)));
+  const shownEliminationKeysRef = useRef<Set<string>>(new Set());
   const startSignalPlayedRef = useRef(false);
   const hiderHideThemePlayedRef = useRef(false);
   const prevPhaseRef = useRef<'roulette' | 'hiding' | 'hunting' | null>(null);
@@ -360,7 +362,7 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
   if (recapLoadedKeyRef.current !== recapStorageKey) {
     recapLoadedKeyRef.current = recapStorageKey;
     try {
-      const raw = window.sessionStorage.getItem(recapStorageKey);
+      const raw = safeSessionGet(recapStorageKey);
       fullPathHistoryRef.current = raw ? JSON.parse(raw) : {};
     } catch {
       fullPathHistoryRef.current = {};
@@ -383,14 +385,10 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
         points: nextPoints,
         totalMeters: prev.totalMeters + (last ? stepMeters : 0),
       };
-      try {
-        window.sessionStorage.setItem(
-          recapStorageKey,
-          JSON.stringify(fullPathHistoryRef.current)
-        );
-      } catch {
-        // Ignorar límite de almacenamiento
-      }
+      safeSessionSet(
+        recapStorageKey,
+        JSON.stringify(fullPathHistoryRef.current)
+      );
       setRecapVersion((v) => v + 1);
     }
   };
@@ -413,23 +411,25 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
     return () => window.removeEventListener('pointerdown', handleUnlock);
   }, []);
 
-  // Mostrar animación pixel-art de eliminación cuando el jugador actual es eliminado
+  const myCaughtAt = myCaughtRecord?.at ?? null;
+
+  // Mostrar animación pixel-art de eliminación una sola vez cuando el jugador actual es eliminado
   useEffect(() => {
-    if (!myCaughtRecord) {
+    if (!myCaughtAt) {
       setShowEliminationOverlay(false);
       return;
     }
-    const seenKey = `baliza_elim_seen_${room.id}_${currentPlayerId}_${myCaughtRecord.at}`;
-    let alreadySeen = false;
-    try {
-      alreadySeen = window.sessionStorage.getItem(seenKey) === '1';
-    } catch {
-      alreadySeen = false;
+    const seenKey = `baliza_elim_seen_${room.id}_${currentPlayerId}_${myCaughtAt}`;
+    if (
+      shownEliminationKeysRef.current.has(seenKey) ||
+      safeSessionGet(seenKey) === '1'
+    ) {
+      return;
     }
-    if (!alreadySeen) {
-      setShowEliminationOverlay(true);
-    }
-  }, [myCaughtRecord, room.id, currentPlayerId]);
+    shownEliminationKeysRef.current.add(seenKey);
+    safeSessionSet(seenKey, '1');
+    setShowEliminationOverlay(true);
+  }, [myCaughtAt, room.id, currentPlayerId]);
 
   // Detectar nuevas eliminaciones y avisar a toda la sala
   useEffect(() => {
@@ -2541,11 +2541,8 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
   const handleCloseEliminationOverlay = () => {
     if (myCaughtRecord) {
       const seenKey = `baliza_elim_seen_${room.id}_${currentPlayerId}_${myCaughtRecord.at}`;
-      try {
-        window.sessionStorage.setItem(seenKey, '1');
-      } catch {
-        // Ignorar si sessionStorage no está disponible
-      }
+      shownEliminationKeysRef.current.add(seenKey);
+      safeSessionSet(seenKey, '1');
     }
     setShowEliminationOverlay(false);
   };
