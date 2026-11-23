@@ -1,10 +1,20 @@
 import { ACCENT_COLORS, EMOJI_PALETTE, PlayerProfile } from '../types/game';
+import {
+  safeLocalGet,
+  safeLocalRemove,
+  safeLocalSet,
+  safeSessionGet,
+  safeSessionRemove,
+  safeSessionSet,
+} from './safeStorage';
 
 const PROFILE_STORAGE_KEY = 'escondite_urbano_profile';
 const PLAYER_ID_STORAGE_KEY = 'escondite_urbano_player_id';
 const ACTIVE_SESSION_STORAGE_KEY = 'escondite_urbano_active_session';
 const TAB_HEARTBEAT_KEY = 'baliza_tab_heartbeat_v1';
-const HEARTBEAT_TTL_MS = 30000;
+const HEARTBEAT_TTL_MS = 2 * 60 * 1000; // 2 minutos
+
+let cachedPlayerId: string | null = null;
 
 // Alfabeto sin caracteres ambiguos (sin O, 0, I, 1)
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -28,7 +38,7 @@ export function generateUuid(): string {
 
 function readHeartbeat(): TabHeartbeat | null {
   try {
-    const raw = localStorage.getItem(TAB_HEARTBEAT_KEY);
+    const raw = safeLocalGet(TAB_HEARTBEAT_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<TabHeartbeat>;
     if (
@@ -65,7 +75,7 @@ export function touchSessionHeartbeat(playerId: string): void {
       ts: Date.now(),
       active: true,
     };
-    localStorage.setItem(TAB_HEARTBEAT_KEY, JSON.stringify(payload));
+    safeLocalSet(TAB_HEARTBEAT_KEY, JSON.stringify(payload));
   } catch {
     // Ignore storage errors
   }
@@ -80,7 +90,7 @@ export function markTabInactive(playerId: string): void {
       ts: Date.now(),
       active: false,
     };
-    localStorage.setItem(TAB_HEARTBEAT_KEY, JSON.stringify(payload));
+    safeLocalSet(TAB_HEARTBEAT_KEY, JSON.stringify(payload));
   } catch {
     // Ignore storage errors
   }
@@ -96,44 +106,60 @@ function isForceNewTabRequested(): boolean {
   }
 }
 
+export function setCachedPlayerId(id: string): void {
+  cachedPlayerId = id;
+  safeSessionSet(PLAYER_ID_STORAGE_KEY, id);
+  safeLocalSet(PLAYER_ID_STORAGE_KEY, id);
+}
+
 export function getPlayerId(): string {
+  if (cachedPlayerId) return cachedPlayerId;
+
   try {
-    const sessionExisting = sessionStorage.getItem(PLAYER_ID_STORAGE_KEY);
-    if (sessionExisting) return sessionExisting;
+    const sessionExisting = safeSessionGet(PLAYER_ID_STORAGE_KEY);
+    if (sessionExisting) {
+      cachedPlayerId = sessionExisting;
+      return sessionExisting;
+    }
 
     const forceNew = isForceNewTabRequested();
 
     // Si se cerró la app/PWA y se vuelve a abrir, recuperar el último jugador de la sesión persistente
     const localSession = parseActiveSessionRaw(
-      localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY)
+      safeLocalGet(ACTIVE_SESSION_STORAGE_KEY)
     );
     if (
       !forceNew &&
       localSession &&
       !isAnotherTabActivelyHoldingSession(localSession.playerId)
     ) {
-      sessionStorage.setItem(PLAYER_ID_STORAGE_KEY, localSession.playerId);
+      cachedPlayerId = localSession.playerId;
+      safeSessionSet(PLAYER_ID_STORAGE_KEY, localSession.playerId);
       return localSession.playerId;
     }
 
-    const localPlayerId = localStorage.getItem(PLAYER_ID_STORAGE_KEY);
+    const localPlayerId = safeLocalGet(PLAYER_ID_STORAGE_KEY);
     if (
       !forceNew &&
       localPlayerId &&
       !isAnotherTabActivelyHoldingSession(localPlayerId)
     ) {
-      sessionStorage.setItem(PLAYER_ID_STORAGE_KEY, localPlayerId);
+      cachedPlayerId = localPlayerId;
+      safeSessionSet(PLAYER_ID_STORAGE_KEY, localPlayerId);
       return localPlayerId;
     }
 
     const next = generateUuid();
-    sessionStorage.setItem(PLAYER_ID_STORAGE_KEY, next);
+    cachedPlayerId = next;
+    safeSessionSet(PLAYER_ID_STORAGE_KEY, next);
     if (!localPlayerId) {
-      localStorage.setItem(PLAYER_ID_STORAGE_KEY, next);
+      safeLocalSet(PLAYER_ID_STORAGE_KEY, next);
     }
     return next;
   } catch {
-    return generateUuid();
+    const fallback = generateUuid();
+    cachedPlayerId = fallback;
+    return fallback;
   }
 }
 
@@ -194,7 +220,7 @@ export function getDefaultProfile(): PlayerProfile {
 
 export function loadProfile(): PlayerProfile {
   try {
-    const raw = localStorage.getItem(PROFILE_STORAGE_KEY);
+    const raw = safeLocalGet(PROFILE_STORAGE_KEY);
     if (!raw) return getDefaultProfile();
     const parsed = JSON.parse(raw) as Partial<PlayerProfile>;
     return {
@@ -209,7 +235,7 @@ export function loadProfile(): PlayerProfile {
 
 export function saveProfile(profile: PlayerProfile): void {
   try {
-    localStorage.setItem(
+    safeLocalSet(
       PROFILE_STORAGE_KEY,
       JSON.stringify({
         name: profile.name.slice(0, 12),
@@ -248,23 +274,24 @@ function parseActiveSessionRaw(raw: string | null): ActiveSession | null {
 export function loadActiveSession(): ActiveSession | null {
   try {
     const fromSession = parseActiveSessionRaw(
-      sessionStorage.getItem(ACTIVE_SESSION_STORAGE_KEY)
+      safeSessionGet(ACTIVE_SESSION_STORAGE_KEY)
     );
-    if (fromSession) return fromSession;
+    if (fromSession) {
+      cachedPlayerId = fromSession.playerId;
+      return fromSession;
+    }
 
     const fromLocal = parseActiveSessionRaw(
-      localStorage.getItem(ACTIVE_SESSION_STORAGE_KEY)
+      safeLocalGet(ACTIVE_SESSION_STORAGE_KEY)
     );
     if (
       !isForceNewTabRequested() &&
       fromLocal &&
       !isAnotherTabActivelyHoldingSession(fromLocal.playerId)
     ) {
-      sessionStorage.setItem(
-        ACTIVE_SESSION_STORAGE_KEY,
-        JSON.stringify(fromLocal)
-      );
-      sessionStorage.setItem(PLAYER_ID_STORAGE_KEY, fromLocal.playerId);
+      cachedPlayerId = fromLocal.playerId;
+      safeSessionSet(ACTIVE_SESSION_STORAGE_KEY, JSON.stringify(fromLocal));
+      safeSessionSet(PLAYER_ID_STORAGE_KEY, fromLocal.playerId);
       return fromLocal;
     }
     return null;
@@ -276,15 +303,16 @@ export function loadActiveSession(): ActiveSession | null {
 export function saveActiveSession(session: ActiveSession | null): void {
   try {
     if (!session) {
-      sessionStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
-      localStorage.removeItem(ACTIVE_SESSION_STORAGE_KEY);
-      localStorage.removeItem(TAB_HEARTBEAT_KEY);
+      safeSessionRemove(ACTIVE_SESSION_STORAGE_KEY);
+      safeLocalRemove(ACTIVE_SESSION_STORAGE_KEY);
+      safeLocalRemove(TAB_HEARTBEAT_KEY);
     } else {
+      cachedPlayerId = session.playerId;
       const serialized = JSON.stringify(session);
-      sessionStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, serialized);
-      sessionStorage.setItem(PLAYER_ID_STORAGE_KEY, session.playerId);
-      localStorage.setItem(ACTIVE_SESSION_STORAGE_KEY, serialized);
-      localStorage.setItem(PLAYER_ID_STORAGE_KEY, session.playerId);
+      safeSessionSet(ACTIVE_SESSION_STORAGE_KEY, serialized);
+      safeSessionSet(PLAYER_ID_STORAGE_KEY, session.playerId);
+      safeLocalSet(ACTIVE_SESSION_STORAGE_KEY, serialized);
+      safeLocalSet(PLAYER_ID_STORAGE_KEY, session.playerId);
       touchSessionHeartbeat(session.playerId);
     }
   } catch {

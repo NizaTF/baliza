@@ -7,6 +7,7 @@ import {
   RoomRecord,
   RoomRules,
 } from '../types/game';
+import { safeLocalGet, safeLocalSet } from './safeStorage';
 import {
   generateRoomCode,
   generateUuid,
@@ -41,7 +42,7 @@ const activeSyncChannels = new Map<
 
 function readLocalStore(): LocalStore {
   try {
-    const raw = localStorage.getItem(LOCAL_ROOMS_KEY);
+    const raw = safeLocalGet(LOCAL_ROOMS_KEY);
     if (!raw) return { rooms: {}, players: {} };
     const parsed = JSON.parse(raw) as LocalStore;
     const now = Date.now();
@@ -63,7 +64,7 @@ function readLocalStore(): LocalStore {
 
 function writeLocalStore(store: LocalStore): void {
   try {
-    localStorage.setItem(LOCAL_ROOMS_KEY, JSON.stringify(store));
+    safeLocalSet(LOCAL_ROOMS_KEY, JSON.stringify(store));
   } catch {
     // Ignore storage quota errors
   }
@@ -83,9 +84,10 @@ export function getSyncMode(): 'supabase' | 'local' {
 
 export async function createRoom(
   profile: PlayerProfile,
-  initialRules: RoomRules = DEFAULT_RULES
+  initialRules: RoomRules = DEFAULT_RULES,
+  explicitPlayerId?: string
 ): Promise<{ room: RoomRecord; player: PlayerRecord }> {
-  const playerId = getPlayerId();
+  const playerId = explicitPlayerId || getPlayerId();
   const cleanName = profile.name.trim().slice(0, 12);
   const cleanEmoji = sanitizePlayerEmoji(profile.emoji);
   const cleanColor = sanitizeHexColor(profile.color);
@@ -124,6 +126,9 @@ export async function createRoom(
         }
         throw new Error(roomError.message);
       }
+
+      // Limpiar cualquier fila huérfana previa de este mismo jugador antes de insertar
+      await supabase.from('players').delete().eq('id', playerId);
 
       const { data: playerData, error: playerError } = await supabase
         .from('players')
@@ -191,10 +196,11 @@ export async function createRoom(
 
 export async function joinRoom(
   rawCode: string,
-  profile: PlayerProfile
+  profile: PlayerProfile,
+  explicitPlayerId?: string
 ): Promise<{ room: RoomRecord; player: PlayerRecord; players: PlayerRecord[] }> {
   const code = rawCode.trim().toUpperCase();
-  const playerId = getPlayerId();
+  const playerId = explicitPlayerId || getPlayerId();
   const cleanName = profile.name.trim().slice(0, 12);
   const cleanEmoji = sanitizePlayerEmoji(profile.emoji);
   const cleanColor = sanitizeHexColor(profile.color);
@@ -336,20 +342,23 @@ export async function fetchRoomState(
   roomId: string
 ): Promise<{ room: RoomRecord; players: PlayerRecord[] } | null> {
   if (isSupabaseConfigured && supabase) {
-    const { data: roomData } = await supabase
+    const { data: roomData, error: roomError } = await supabase
       .from('rooms')
       .select('*')
       .eq('id', roomId)
       .eq('status', 'lobby')
       .maybeSingle();
 
+    if (roomError) throw new Error(roomError.message);
     if (!roomData) return null;
 
-    const { data: playersData } = await supabase
+    const { data: playersData, error: playersError } = await supabase
       .from('players')
       .select('*')
       .eq('room_id', roomId)
       .order('joined_at', { ascending: true });
+
+    if (playersError) throw new Error(playersError.message);
 
     return {
       room: roomData as RoomRecord,
@@ -365,6 +374,41 @@ export async function fetchRoomState(
     room,
     players: [...(store.players[roomId] || [])],
   };
+}
+
+export async function verifyPlayerInRoom(
+  roomId: string,
+  playerId: string
+): Promise<'present' | 'missing' | 'unknown'> {
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { data: roomData, error: roomErr } = await supabase
+        .from('rooms')
+        .select('id, status')
+        .eq('id', roomId)
+        .maybeSingle();
+      if (roomErr || !roomData || roomData.status !== 'lobby') {
+        return 'unknown';
+      }
+
+      const { data: playerData, error: playerErr } = await supabase
+        .from('players')
+        .select('id')
+        .eq('room_id', roomId)
+        .eq('id', playerId)
+        .maybeSingle();
+      if (playerErr) return 'unknown';
+      return playerData ? 'present' : 'missing';
+    } catch {
+      return 'unknown';
+    }
+  }
+
+  const store = readLocalStore();
+  const room = store.rooms[roomId];
+  if (!room || room.status !== 'lobby') return 'unknown';
+  const list = store.players[roomId] || [];
+  return list.some((p) => p.id === playerId) ? 'present' : 'missing';
 }
 
 export async function updateRoomRules(

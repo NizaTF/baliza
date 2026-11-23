@@ -25,6 +25,7 @@ import {
   transferHost,
   updatePlayerProfileInRoom,
   updateRoomRules,
+  verifyPlayerInRoom,
 } from './lib/roomService';
 import {
   startBackgroundKeepAlive,
@@ -43,8 +44,10 @@ import {
 import {
   applyPreferencesToDocument,
   loadPreferences,
+  refreshPreferencesFromStorage,
   triggerHaptic,
 } from './lib/preferences';
+import { hydrateFromIndexedDbFallback } from './lib/safeStorage';
 import {
   getPlayerId,
   loadActiveSession,
@@ -53,6 +56,7 @@ import {
   sanitizeRoomCode,
   saveActiveSession,
   saveProfile,
+  setCachedPlayerId,
   touchSessionHeartbeat,
 } from './lib/storage';
 import { supabaseConfigError } from './lib/supabaseClient';
@@ -78,7 +82,7 @@ type AppView = 'home' | 'host_rules' | 'lobby';
 
 export default function App() {
   const [profile, setProfile] = useState<PlayerProfile>(() => loadProfile());
-  const [playerId] = useState<string>(() => getPlayerId());
+  const [playerId, setPlayerId] = useState<string>(() => getPlayerId());
   const [view, setView] = useState<AppView>('home');
   const [showSettings, setShowSettings] = useState(false);
   const [room, setRoom] = useState<RoomRecord | null>(null);
@@ -111,6 +115,7 @@ export default function App() {
 
   const leavingSelfRef = useRef(false);
   const kickedHandledRef = useRef(false);
+  const membershipVerifyInFlightRef = useRef(false);
   const countdownTimerRef = useRef<number | null>(null);
   const profileSyncTimerRef = useRef<number | null>(null);
   const toastTimersRef = useRef<Record<string, number>>({});
@@ -176,14 +181,58 @@ export default function App() {
     });
   }, []);
 
+  const confirmAndTriggerKick = useCallback(
+    async (roomIdToCheck: string, targetId: string) => {
+      if (
+        leavingSelfRef.current ||
+        kickedHandledRef.current ||
+        membershipVerifyInFlightRef.current
+      ) {
+        return;
+      }
+      membershipVerifyInFlightRef.current = true;
+      try {
+        await new Promise((resolve) => window.setTimeout(resolve, 450));
+        if (leavingSelfRef.current || kickedHandledRef.current) return;
+        const status = await verifyPlayerInRoom(roomIdToCheck, targetId);
+        if (status === 'missing') {
+          triggerKickedOut();
+        }
+      } finally {
+        membershipVerifyInFlightRef.current = false;
+      }
+    },
+    [triggerKickedOut]
+  );
+
   const handleProfileChange = useCallback((next: PlayerProfile) => {
     setProfile(next);
     saveProfile(next);
   }, []);
 
-  // Aplicar preferencias guardadas (tema, fuente, animaciones) al iniciar
+  // Aplicar preferencias guardadas e hidratar respaldo en IndexedDB si hiciera falta
   useEffect(() => {
     applyPreferencesToDocument(loadPreferences());
+    let cancelled = false;
+    void hydrateFromIndexedDbFallback().then((restoredKeys) => {
+      if (cancelled || restoredKeys.length === 0) return;
+      if (restoredKeys.includes('baliza_app_preferences_v1')) {
+        refreshPreferencesFromStorage();
+      }
+      if (restoredKeys.includes('escondite_urbano_profile')) {
+        const restoredProfile = loadProfile();
+        setProfile((current) =>
+          current.name.trim().length > 0 ? current : restoredProfile
+        );
+      }
+      if (restoredKeys.includes('escondite_urbano_player_id')) {
+        const restoredId = getPlayerId();
+        setPlayerId(restoredId);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   // Sonido clic pixelado al interactuar con elementos UI (botones, pestañas, interruptores)
@@ -237,6 +286,8 @@ export default function App() {
 
     const activeSession = loadActiveSession();
     if (activeSession) {
+      setCachedPlayerId(activeSession.playerId);
+      setPlayerId(activeSession.playerId);
       fetchRoomState(activeSession.roomId)
         .then((state) => {
           if (!state) {
@@ -255,7 +306,7 @@ export default function App() {
           setView('lobby');
         })
         .catch(() => {
-          saveActiveSession(null);
+          // Mantener sesión en errores transitorios de red
         });
     }
   }, []);
@@ -271,7 +322,8 @@ export default function App() {
   // Suscripción en tiempo real a cambios de la sala y jugadores
   useEffect(() => {
     if (!room?.id) return;
-    const unsubscribe = subscribeToRoom(room.id, {
+    const activeRoomId = room.id;
+    const unsubscribe = subscribeToRoom(activeRoomId, {
       onRoomChange: (updatedRoom) => {
         if (!updatedRoom) {
           saveActiveSession(null);
@@ -287,14 +339,12 @@ export default function App() {
         setRoom(updatedRoom);
       },
       onPlayersChange: (updatedPlayers) => {
-        setPlayers(updatedPlayers);
-        if (
-          !leavingSelfRef.current &&
-          updatedPlayers.length > 0 &&
-          !updatedPlayers.some((p) => p.id === playerId)
-        ) {
-          triggerKickedOut();
+        const selfPresent = updatedPlayers.some((p) => p.id === playerId);
+        if (selfPresent || leavingSelfRef.current) {
+          setPlayers(updatedPlayers);
+          return;
         }
+        void confirmAndTriggerKick(activeRoomId, playerId);
       },
       onPlayerKicked: (targetPlayerId) => {
         if (targetPlayerId === playerId) {
@@ -305,7 +355,7 @@ export default function App() {
       },
     });
     return unsubscribe;
-  }, [room?.id, playerId, reconnectKey, triggerKickedOut]);
+  }, [room?.id, playerId, reconnectKey, triggerKickedOut, confirmAndTriggerKick]);
 
   // Wake Lock y resincronización automática
   useEffect(() => {
@@ -318,6 +368,7 @@ export default function App() {
     }, 3000);
 
     let wakeLockSentinel: WakeLockSentinel | null = null;
+    let lastResyncAt = 0;
 
     const requestWakeLock = async () => {
       try {
@@ -338,10 +389,16 @@ export default function App() {
 
     void requestWakeLock();
 
-    const resyncFromServer = async () => {
+    const resyncFromServer = async (forceReconnect = false) => {
+      const now = Date.now();
+      if (!forceReconnect && now - lastResyncAt < 5000) return;
+      lastResyncAt = now;
+
       touchSessionHeartbeat(playerId);
       void requestWakeLock();
-      setReconnectKey((k) => k + 1);
+      if (forceReconnect) {
+        setReconnectKey((k) => k + 1);
+      }
       try {
         const state = await fetchRoomState(activeRoomId);
         if (!state) {
@@ -354,7 +411,7 @@ export default function App() {
         }
         const isStillMember = state.players.some((p) => p.id === playerId);
         if (!isStillMember) {
-          triggerKickedOut();
+          void confirmAndTriggerKick(activeRoomId, playerId);
           return;
         }
         setRoom(state.room);
@@ -366,7 +423,7 @@ export default function App() {
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
-        void resyncFromServer();
+        void resyncFromServer(true);
       }
     };
 
@@ -380,25 +437,31 @@ export default function App() {
       event.returnValue = '';
     };
 
-    const handleFocusOrOnline = () => {
+    const handleOnline = () => {
       if (document.visibilityState === 'visible') {
-        void resyncFromServer();
+        void resyncFromServer(true);
+      }
+    };
+
+    const handleFocus = () => {
+      if (document.visibilityState === 'visible') {
+        void resyncFromServer(false);
       }
     };
 
     document.addEventListener('visibilitychange', handleVisibilityChange);
     window.addEventListener('pagehide', handlePageHide);
     window.addEventListener('beforeunload', handleBeforeUnload);
-    window.addEventListener('focus', handleFocusOrOnline);
-    window.addEventListener('online', handleFocusOrOnline);
+    window.addEventListener('focus', handleFocus);
+    window.addEventListener('online', handleOnline);
 
     return () => {
       window.clearInterval(heartbeatTimer);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('pagehide', handlePageHide);
       window.removeEventListener('beforeunload', handleBeforeUnload);
-      window.removeEventListener('focus', handleFocusOrOnline);
-      window.removeEventListener('online', handleFocusOrOnline);
+      window.removeEventListener('focus', handleFocus);
+      window.removeEventListener('online', handleOnline);
       if (wakeLockSentinel) {
         void wakeLockSentinel.release().catch(() => {});
         wakeLockSentinel = null;
@@ -607,11 +670,15 @@ export default function App() {
     setJoinError(null);
     setGlobalNotice(null);
     leavingSelfRef.current = false;
+    kickedHandledRef.current = false;
     try {
       const { room: createdRoom, player } = await createRoom(
         profile,
-        DEFAULT_RULES
+        DEFAULT_RULES,
+        playerId
       );
+      setCachedPlayerId(player.id);
+      setPlayerId(player.id);
       setRoom(createdRoom);
       setPlayers([player]);
       saveActiveSession({
@@ -636,8 +703,11 @@ export default function App() {
     setJoinError(null);
     setGlobalNotice(null);
     leavingSelfRef.current = false;
+    kickedHandledRef.current = false;
     try {
-      const result = await joinRoom(code, profile);
+      const result = await joinRoom(code, profile, playerId);
+      setCachedPlayerId(result.player.id);
+      setPlayerId(result.player.id);
       setRoom(result.room);
       setPlayers(result.players);
       saveActiveSession({

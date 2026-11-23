@@ -1,3 +1,5 @@
+import { safeLocalGet, safeLocalSet } from './safeStorage';
+
 export const APP_VERSION = '1.0.0';
 export const APP_AUTHOR = 'NizaTF';
 export const BUY_ME_A_COFFEE_URL = 'https://buymeacoffee.com/nizatf';
@@ -40,7 +42,7 @@ function clampVolume(value: unknown, fallback: number): number {
 
 export function loadPreferences(): AppPreferences {
   try {
-    const raw = localStorage.getItem(PREFS_STORAGE_KEY);
+    const raw = safeLocalGet(PREFS_STORAGE_KEY);
     if (!raw) return { ...DEFAULT_PREFERENCES };
     const parsed = JSON.parse(raw) as Partial<AppPreferences>;
     return {
@@ -94,14 +96,16 @@ export function savePreferences(prefs: AppPreferences): AppPreferences {
     musicVolume: clampVolume(prefs.musicVolume, DEFAULT_PREFERENCES.musicVolume),
     sfxVolume: clampVolume(prefs.sfxVolume, DEFAULT_PREFERENCES.sfxVolume),
   };
-  try {
-    localStorage.setItem(PREFS_STORAGE_KEY, JSON.stringify(normalized));
-  } catch {
-    // Ignore storage quota errors
-  }
+  safeLocalSet(PREFS_STORAGE_KEY, JSON.stringify(normalized));
   applyPreferencesToDocument(normalized);
   listeners.forEach((cb) => cb(normalized));
   return normalized;
+}
+
+export function refreshPreferencesFromStorage(): void {
+  const loaded = loadPreferences();
+  applyPreferencesToDocument(loaded);
+  listeners.forEach((cb) => cb(loaded));
 }
 
 export function subscribePreferences(
