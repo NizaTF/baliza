@@ -55,6 +55,7 @@ import {
   playEndgameCountdownTick,
   playGlobalEliminationAlert,
   playHuntStartSting,
+  playInfectionAlert,
   playLocationTamperAlarm,
   playMatchStartSignal,
   playMatchStartSuspenseTheme,
@@ -185,7 +186,9 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
   const myRole = match?.roles?.[currentPlayerId] ?? 'hider';
   const activeZones = match?.activeZones ?? [];
   const caughtMap = match?.caught || {};
+  const infectedMap = match?.infected || {};
   const myCaughtRecord = caughtMap[currentPlayerId];
+  const myInfectedRecord = infectedMap[currentPlayerId];
   const stormGraceMaxSec = room.rules.stormGraceSec ?? 30;
   const timeVictoryEnabled = room.rules.timeVictoryEnabled ?? true;
   const locationGuardEnabled = room.rules.requireLocationGuard ?? true;
@@ -225,6 +228,7 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
   const panicEndgameEnabled = Boolean(mods?.panicEndgameEnabled);
   const panicWindowSec = mods?.panicWindowSec ?? 60;
   const panicPingIntervalSec = mods?.panicPingIntervalSec ?? 15;
+  const infectionModeEnabled = Boolean(mods?.infectionModeEnabled);
   const allowTestJoystick = mods?.testJoystickEnabled ?? true;
   const testJoystickDefaultSpeed = mods?.testJoystickDefaultSpeed ?? 'run';
 
@@ -340,6 +344,9 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
   const waitTriggeredForEndRef = useRef<string | null>(null);
   const waitDeadlineMsRef = useRef<number | null>(null);
   const seenCaughtIdsRef = useRef<Set<string>>(new Set(Object.keys(caughtMap)));
+  const seenInfectedIdsRef = useRef<Set<string>>(
+    new Set(Object.keys(infectedMap))
+  );
   const shownEliminationKeysRef = useRef<Set<string>>(new Set());
   const startSignalPlayedRef = useRef(false);
   const hiderHideThemePlayedRef = useRef(false);
@@ -467,6 +474,46 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
       return () => window.clearTimeout(timeout);
     }
   }, [caughtMap, players, currentPlayerId]);
+
+  // Detectar nuevas infecciones y avisar a toda la sala (sin pantalla de eliminación)
+  useEffect(() => {
+    const currentKeys = Object.keys(infectedMap);
+    const newlyInfected = currentKeys.filter(
+      (id) => !seenInfectedIdsRef.current.has(id)
+    );
+    seenInfectedIdsRef.current = new Set(currentKeys);
+
+    if (newlyInfected.length > 0) {
+      const targetId = newlyInfected[newlyInfected.length - 1];
+      const rec = infectedMap[targetId];
+      const targetName =
+        players.find((p) => p.id === targetId)?.name || 'Un jugador';
+      const hunterName =
+        players.find((p) => p.id === rec?.byPlayerId)?.name || 'Un buscador';
+      const selfInfected = newlyInfected.includes(currentPlayerId);
+
+      setCaptureToast(
+        selfInfected
+          ? '🧟 ¡Te han infectado! Ahora eres Buscador.'
+          : `🧟 ${hunterName} infectó a ${targetName}. ¡Ahora es buscador!`
+      );
+
+      playInfectionAlert(selfInfected);
+
+      if (selfInfected && document.visibilityState === 'hidden') {
+        void sendBackgroundNotification(
+          '🧟 ¡Has sido infectado!',
+          `${hunterName} te atrapó. Ahora juegas como Buscador.`,
+          'baliza-infected'
+        );
+      }
+
+      const timeout = window.setTimeout(() => {
+        setCaptureToast(null);
+      }, 6500);
+      return () => window.clearTimeout(timeout);
+    }
+  }, [infectedMap, players, currentPlayerId]);
 
   // Seguimiento GPS propio + recuperación inmediata al encender la pantalla tras segundo plano
   useEffect(() => {
@@ -1360,6 +1407,8 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
     };
   }, [players, match?.roles, caughtMap]);
 
+  const infectedCount = Object.keys(infectedMap).length;
+  const hadAnyHiders = hiderStats.totalHiders > 0 || infectedCount > 0;
   const canCheckAllCaught = hasMatchStarted && !isRoulettePhase;
   const isTimeLimitReached =
     timeVictoryEnabled && isHuntPhase && roundRemainingSec <= 0;
@@ -1370,7 +1419,8 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
       isHuntPhase &&
       !matchWinner &&
       (roundRemainingSec <= panicWindowSec ||
-        (hiderStats.totalHiders > 1 && hiderStats.activeHiders === 1))
+        (hiderStats.totalHiders + infectedCount > 1 &&
+          hiderStats.activeHiders === 1))
   );
   const panicPulseBucket = Math.floor(huntElapsedSec / panicPingIntervalSec);
   const panicTargetDistM = useMemo(() => {
@@ -1395,7 +1445,7 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
     }
 
     let pendingWin: { winner: MatchWinner; reason: MatchWinReason } | null = null;
-    if (hiderStats.totalHiders > 0 && hiderStats.activeHiders === 0) {
+    if (hadAnyHiders && hiderStats.activeHiders === 0) {
       pendingWin = { winner: 'seekers', reason: 'all_caught' };
     } else if (isTimeLimitReached && hiderStats.activeHiders > 0) {
       pendingWin = { winner: 'hiders', reason: 'time_expired' };
@@ -1424,7 +1474,7 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
   }, [
     matchWinner,
     canCheckAllCaught,
-    hiderStats.totalHiders,
+    hadAnyHiders,
     hiderStats.activeHiders,
     isTimeLimitReached,
     isHost,
@@ -1434,6 +1484,10 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
   const waitTimerRef = useRef<number | null>(null);
   const matchEndedAtRef = useRef(match?.endedAt);
   matchEndedAtRef.current = match?.endedAt;
+  const caughtMapRef = useRef(caughtMap);
+  caughtMapRef.current = caughtMap;
+  const infectedMapRef = useRef(infectedMap);
+  infectedMapRef.current = infectedMap;
 
   // Esperar a que termine la animación de eliminación cuando todos han sido pillados antes de lanzar Victoria/Derrota
   useEffect(() => {
@@ -1478,13 +1532,23 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
       return;
     }
 
-    waitDeadlineMsRef.current = Date.now() + 4250;
+    const latestCaughtMs = Object.values(caughtMapRef.current).reduce((max, rec) => {
+      const t = new Date(rec.at).getTime();
+      return Number.isNaN(t) ? max : Math.max(max, t);
+    }, 0);
+    const latestInfectedMs = Object.values(infectedMapRef.current).reduce((max, rec) => {
+      const t = new Date(rec.at).getTime();
+      return Number.isNaN(t) ? max : Math.max(max, t);
+    }, 0);
+    const waitMs = latestInfectedMs > latestCaughtMs ? 1200 : 4250;
+
+    waitDeadlineMsRef.current = Date.now() + waitMs;
     setResultWaitDone(false);
     waitTimerRef.current = window.setTimeout(() => {
       waitTimerRef.current = null;
       waitDeadlineMsRef.current = null;
       setResultWaitDone(true);
-    }, 4250);
+    }, waitMs);
   }, [match?.startedAt, matchWinner, matchWinReason]);
 
   useEffect(() => {
@@ -1511,11 +1575,13 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
           ? 'Se activó la Baliza de Extracción.'
           : matchWinReason === 'time_expired'
           ? 'Se agotó el tiempo de la ronda.'
+          : infectionModeEnabled
+          ? 'Todos los fugitivos fueron infectados o eliminados.'
           : 'Todos los fugitivos fueron eliminados.',
         'baliza-winner'
       );
     }
-  }, [matchWinner, matchWinReason]);
+  }, [matchWinner, matchWinReason, infectionModeEnabled]);
 
   const locationTamperingPlayers = useMemo(() => {
     if (!locationGuardEnabled || matchWinner) return [];
@@ -2335,7 +2401,14 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
   interface MatchHistoryEvent {
     id: string;
     atMs: number;
-    kind: 'phase' | 'storm' | 'elimination' | 'beacon' | 'photo' | 'winner';
+    kind:
+      | 'phase'
+      | 'storm'
+      | 'elimination'
+      | 'infection'
+      | 'beacon'
+      | 'photo'
+      | 'winner';
     title: string;
     detail?: string;
   }
@@ -2469,6 +2542,23 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
       });
     });
 
+    Object.entries(infectedMap).forEach(([targetId, rec]) => {
+      const targetName =
+        players.find((p) => p.id === targetId)?.name || 'Un jugador';
+      const hunterName =
+        players.find((p) => p.id === rec.byPlayerId)?.name || 'Un buscador';
+      const parsedAt = new Date(rec.at).getTime();
+      const atMs = Number.isNaN(parsedAt) ? syncedNowMs : parsedAt;
+
+      list.push({
+        id: `inf-${targetId}-${rec.at}`,
+        atMs,
+        kind: 'infection',
+        title: `${targetName} fue infectado por ${hunterName}`,
+        detail: 'Pasó al bando de los buscadores.',
+      });
+    });
+
     if (matchWinner) {
       const endedMs = match?.endedAt ? new Date(match.endedAt).getTime() : NaN;
       list.push({
@@ -2484,6 +2574,8 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
             ? 'Se activó la baliza de extracción.'
             : matchWinReason === 'time_expired'
             ? 'Se agotó el tiempo de la partida.'
+            : infectionModeEnabled
+            ? 'Todos los fugitivos fueron infectados o eliminados.'
             : 'Todos los fugitivos fueron eliminados.',
       });
     }
@@ -2501,6 +2593,8 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
     extractionBeacon,
     photoChallenge,
     caughtMap,
+    infectedMap,
+    infectionModeEnabled,
     players,
     syncedNowMs,
     matchWinner,
@@ -2518,8 +2612,7 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
     ? 0
     : Math.max(0, matchEvents.length - seenEventsCount);
 
-  const allHidersCaught =
-    hiderStats.totalHiders > 0 && hiderStats.activeHiders === 0;
+  const allHidersCaught = hadAnyHiders && hiderStats.activeHiders === 0;
 
   const eliminationCauseLabel = useMemo(() => {
     if (!myCaughtRecord) return '';
@@ -2581,7 +2674,11 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
               </div>
               <div className="min-w-0">
                 <p className="text-[11px] font-medium text-slate-500">
-                  {myCaughtRecord ? 'Eliminado' : `Sala ${room.code}`}
+                  {myCaughtRecord
+                    ? 'Eliminado'
+                    : myInfectedRecord
+                    ? `Infectado · Sala ${room.code}`
+                    : `Sala ${room.code}`}
                 </p>
                 <h1 className="font-display truncate text-sm sm:text-base font-bold leading-tight text-slate-900">
                   {myCaughtRecord
@@ -2761,7 +2858,11 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
               <CheckCircle2 className="h-4 w-4 shrink-0" />
               <span>
                 {matchWinner
-                  ? `Último fugitivo eliminado · Resultado en ${
+                  ? `${
+                      infectionModeEnabled
+                        ? 'Último fugitivo atrapado'
+                        : 'Último fugitivo eliminado'
+                    } · Resultado en ${
                       waitDeadlineMsRef.current
                         ? Math.max(
                             1,
@@ -2769,6 +2870,8 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
                           )
                         : 1
                     } s...`
+                  : infectionModeEnabled
+                  ? 'Todos los fugitivos infectados o eliminados. Calculando resultado...'
                   : 'Todos los fugitivos eliminados. Calculando resultado...'}
               </span>
             </div>
@@ -3034,7 +3137,10 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
                   className="inline-flex min-h-[44px] items-center gap-2 rounded-xl bg-rose-600 px-4 py-2 text-xs font-semibold text-white shadow-md hover:bg-rose-700"
                 >
                   <UserCheck className="h-4 w-4" aria-hidden="true" />
-                  <span>Marcar captura ({hiderStats.activeHiders})</span>
+                  <span>
+                    {infectionModeEnabled ? 'Infectar' : 'Marcar captura'} (
+                    {hiderStats.activeHiders})
+                  </span>
                 </button>
               </div>
             )}
@@ -3130,7 +3236,9 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
                   </h2>
                   <p className="text-xs text-slate-500">
                     {activeTab === 'players'
-                      ? `${hiderStats.activeHiders} de ${hiderStats.totalHiders} fugitivos libres`
+                      ? infectionModeEnabled && infectedCount > 0
+                        ? `${hiderStats.activeHiders} fugitivos libres · ${infectedCount} infectados`
+                        : `${hiderStats.activeHiders} de ${hiderStats.totalHiders} fugitivos libres`
                       : activeTab === 'storm'
                       ? `Tiempo restante: ${formatDurationSec(roundRemainingSec)}`
                       : `Sala ${room.code} · ${room.rules.roundDuration} min`}
@@ -3154,6 +3262,7 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
                       const isSelf = p.id === currentPlayerId;
                       const pRole = match?.roles?.[p.id] ?? 'hider';
                       const caughtInfo = caughtMap[p.id];
+                      const infectedInfo = infectedMap[p.id];
                       const catcherName =
                         caughtInfo &&
                         caughtInfo.byPlayerId !== 'storm' &&
@@ -3162,6 +3271,10 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
                           ? players.find((x) => x.id === caughtInfo.byPlayerId)
                               ?.name || 'Buscador'
                           : null;
+                      const infectorName = infectedInfo
+                        ? players.find((x) => x.id === infectedInfo.byPlayerId)
+                            ?.name || 'Buscador'
+                        : null;
                       const loc = otherLocations[p.id];
                       const otherExposed = Boolean(
                         !caughtInfo &&
@@ -3237,6 +3350,11 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
                                         : `Eliminado · Pillado por ${catcherName}`}
                                     </span>
                                   )}
+                                  {!caughtInfo && infectedInfo && (
+                                    <span className="font-medium text-rose-600">
+                                      Buscador · Infectado por {infectorName}
+                                    </span>
+                                  )}
                                   {!caughtInfo && otherExposed && (
                                     <span className="text-violet-700 ml-1">
                                       · En tormenta
@@ -3263,7 +3381,7 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
                                   disabled={busyCatchId === p.id}
                                   className="min-h-[36px] rounded-xl bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-rose-700 whitespace-nowrap"
                                 >
-                                  Pillado
+                                  {infectionModeEnabled ? 'Infectar' : 'Pillado'}
                                 </button>
                               )}
 
@@ -3282,12 +3400,16 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
                                 </button>
                               )}
 
-                              {caughtInfo && isHost && (
+                              {(caughtInfo || infectedInfo) && isHost && (
                                 <button
                                   type="button"
                                   onClick={() => handleUndo(p.id)}
                                   disabled={busyCatchId === p.id}
-                                  title="Deshacer eliminación"
+                                  title={
+                                    infectedInfo
+                                      ? 'Deshacer infección'
+                                      : 'Deshacer eliminación'
+                                  }
                                   className="inline-flex min-h-[36px] items-center gap-1 rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
                                 >
                                   <RotateCcw className="h-3.5 w-3.5" />
@@ -3301,7 +3423,11 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
                             <div className="flex items-center justify-between gap-2 rounded-xl bg-rose-50 px-3 py-2 text-xs">
                               <span className="font-semibold text-rose-900">
                                 {isSelf
-                                  ? '¿Confirmar que te han pillado?'
+                                  ? infectionModeEnabled
+                                    ? '¿Confirmar que te han pillado? Pasarás a ser buscador.'
+                                    : '¿Confirmar que te han pillado?'
+                                  : infectionModeEnabled
+                                  ? `¿Confirmas que infectaste a ${p.name}? Pasará a ser buscador.`
                                   : `¿Confirmas que pillaste a ${p.name}?`}
                               </span>
                               <div className="flex items-center gap-1.5 shrink-0">
@@ -3712,6 +3838,8 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
             players={players}
             roles={match?.roles || {}}
             caughtMap={caughtMap}
+            infectedMap={infectedMap}
+            infectionModeEnabled={infectionModeEnabled}
             extractionBeacon={extractionBeacon}
             recapRoutes={recapRoutes}
             activeZones={activeZones}
@@ -3876,7 +4004,7 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
                         <div className="flex min-w-0 items-start gap-3">
                           <div
                             className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl ${
-                              ev.kind === 'elimination'
+                              ev.kind === 'elimination' || ev.kind === 'infection'
                                 ? 'bg-rose-50 text-rose-600'
                                 : ev.kind === 'storm'
                                 ? 'bg-violet-50 text-violet-700'
@@ -3889,6 +4017,8 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
                           >
                             {ev.kind === 'elimination' ? (
                               <PixelSkull className="h-4 w-4" />
+                            ) : ev.kind === 'infection' ? (
+                              <UserCheck className="h-4 w-4" aria-hidden="true" />
                             ) : ev.kind === 'storm' ? (
                               <Compass className="h-4 w-4" aria-hidden="true" />
                             ) : ev.kind === 'beacon' ? (

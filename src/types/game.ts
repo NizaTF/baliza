@@ -43,6 +43,11 @@ export interface CaughtRecord {
   byPlayerId: string | 'storm' | 'anticheat' | 'photo';
 }
 
+export interface InfectedRecord {
+  at: string;
+  byPlayerId: string;
+}
+
 export interface PhotoSubmissionRecord {
   at: string;
   status: 'accepted' | 'rejected';
@@ -74,6 +79,7 @@ export interface MatchState {
   roles: Record<string, PlayerRole>;
   activeZones: StormZonePhase[];
   caught?: Record<string, CaughtRecord>;
+  infected?: Record<string, InfectedRecord>;
   rouletteDurationMs?: number;
   seekerOrder?: string[];
   hideTimeSec?: number;
@@ -119,6 +125,7 @@ export interface RoomModifiers {
   panicEndgameEnabled?: boolean;
   panicWindowSec?: number;
   panicPingIntervalSec?: number;
+  infectionModeEnabled?: boolean;
   testJoystickEnabled?: boolean;
   testJoystickDefaultSpeed?: 'walk' | 'run' | 'fast';
 }
@@ -292,6 +299,7 @@ export const DEFAULT_RULES: RoomRules = {
     panicEndgameEnabled: false,
     panicWindowSec: 60,
     panicPingIntervalSec: 15,
+    infectionModeEnabled: false,
     testJoystickEnabled: true,
     testJoystickDefaultSpeed: 'run',
   },

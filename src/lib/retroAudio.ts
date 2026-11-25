@@ -1669,4 +1669,61 @@ export function playMusicPreviewSample(): void {
   }, 1900);
 }
 
+/**
+ * Aviso sonoro cuando un fugitivo es infectado y pasa al bando de los buscadores.
+ */
+export function playInfectionAlert(isSelfInfected = false): void {
+  const scale = getAudioScale('sfx');
+  if (scale <= 0) return;
+
+  const ctx = getAudioContext();
+  if (!ctx) return;
+  if (ctx.state === 'suspended') {
+    void ctx.resume().catch(() => {});
+  }
+
+  const now = ctx.currentTime + 0.008;
+  const master = ctx.createGain();
+  master.gain.value = (isSelfInfected ? 0.34 : 0.22) * scale;
+  master.connect(ctx.destination);
+
+  playPunchyKick(ctx, master, now, isSelfInfected ? 0.6 : 0.42);
+
+  const notes: Array<[number, number, number]> = isSelfInfected
+    ? [
+        [329.63, 0.0, 0.1],
+        [440.0, 0.09, 0.1],
+        [622.25, 0.18, 0.12],
+        [880.0, 0.29, 0.34],
+      ]
+    : [
+        [622.25, 0.0, 0.12],
+        [493.88, 0.11, 0.12],
+        [739.99, 0.22, 0.28],
+      ];
+
+  notes.forEach(([freq, offset, dur]) => {
+    const osc = ctx.createOscillator();
+    const filter = ctx.createBiquadFilter();
+    const gain = ctx.createGain();
+    const t0 = now + offset;
+    const t1 = t0 + dur;
+
+    osc.type = isSelfInfected ? 'sawtooth' : 'triangle';
+    osc.frequency.setValueAtTime(freq, t0);
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(2400, t0);
+
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.linearRampToValueAtTime(0.36, t0 + 0.008);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t1);
+
+    osc.connect(filter);
+    filter.connect(gain);
+    gain.connect(master);
+    osc.start(t0);
+    osc.stop(t1 + 0.02);
+  });
+}
+
 

@@ -15,6 +15,7 @@ import { playMatchResultTheme, unlockRetroAudio } from '../lib/retroAudio';
 import {
   CaughtRecord,
   ExtractionBeacon,
+  InfectedRecord,
   MatchWinReason,
   MatchWinner,
   PlayerRecapRoute,
@@ -33,6 +34,8 @@ interface MatchResultOverlayProps {
   players: PlayerRecord[];
   roles: Record<string, PlayerRole>;
   caughtMap: Record<string, CaughtRecord>;
+  infectedMap?: Record<string, InfectedRecord>;
+  infectionModeEnabled?: boolean;
   extractionBeacon?: ExtractionBeacon | null;
   recapRoutes?: Record<string, PlayerRecapRoute>;
   activeZones?: StormZonePhase[];
@@ -137,6 +140,8 @@ export const MatchResultOverlay: React.FC<MatchResultOverlayProps> = ({
   players,
   roles,
   caughtMap,
+  infectedMap = {},
+  infectionModeEnabled = false,
   extractionBeacon,
   recapRoutes = {},
   activeZones = [],
@@ -484,7 +489,9 @@ export const MatchResultOverlay: React.FC<MatchResultOverlayProps> = ({
 
   const reasonText =
     winReason === 'all_caught'
-      ? 'Todos los fugitivos han sido eliminados.'
+      ? infectionModeEnabled
+        ? 'Todos los fugitivos han sido infectados o eliminados.'
+        : 'Todos los fugitivos han sido eliminados.'
       : winReason === 'beacon_extracted'
       ? activatorName
         ? `${activatorName} activó la Baliza de Extracción.`
@@ -759,6 +766,7 @@ export const MatchResultOverlay: React.FC<MatchResultOverlayProps> = ({
               players={players}
               roles={roles}
               caughtMap={caughtMap}
+              infectedMap={infectedMap}
               recapRoutes={recapRoutes}
               activeZones={activeZones}
               extractionBeacon={extractionBeacon}
@@ -850,9 +858,14 @@ export const MatchResultOverlay: React.FC<MatchResultOverlayProps> = ({
                   </p>
                   <ul className="divide-y divide-slate-100 border-t border-slate-100">
                     {seekers.map((p) => {
-                      const catchesCount = Object.values(caughtMap).filter(
-                        (c) => c.byPlayerId === p.id
-                      ).length;
+                      const catchesCount =
+                        Object.values(caughtMap).filter(
+                          (c) => c.byPlayerId === p.id
+                        ).length +
+                        Object.values(infectedMap).filter(
+                          (c) => c.byPlayerId === p.id
+                        ).length;
+                      const wasInfected = Boolean(infectedMap[p.id]);
                       return (
                         <li
                           key={p.id}
@@ -865,9 +878,16 @@ export const MatchResultOverlay: React.FC<MatchResultOverlayProps> = ({
                               size="sm"
                               name={p.name}
                             />
-                            <span className="truncate text-sm font-semibold text-slate-900">
-                              {p.name}
-                            </span>
+                            <div className="min-w-0">
+                              <span className="block truncate text-sm font-semibold text-slate-900">
+                                {p.name}
+                              </span>
+                              {wasInfected && (
+                                <span className="block text-[11px] font-medium text-rose-600">
+                                  Infectado
+                                </span>
+                              )}
+                            </div>
                           </div>
                           <span className="font-mono text-xs font-semibold tabular-nums text-slate-700 shrink-0">
                             {catchesCount} {catchesCount === 1 ? 'captura' : 'capturas'}

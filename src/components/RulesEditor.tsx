@@ -97,6 +97,7 @@ export const RulesEditor: React.FC<RulesEditorProps> = ({
     const m = draft.modifiers;
     let count = 0;
     if (m.classicModeEnabled) count++;
+    if (m.infectionModeEnabled) count++;
     if (draft.timeVictoryEnabled ?? true) count++;
     if (draft.beaconVictoryEnabled ?? true) count++;
     if (m.hunterPhotoEnabled) count++;
@@ -647,6 +648,40 @@ export const RulesEditor: React.FC<RulesEditorProps> = ({
                     </div>
                   </div>
                 )}
+              </div>
+
+              {/* Modo infección */}
+              <div
+                className={`rounded-2xl border p-4 space-y-3 md:col-span-2 transition-colors ${
+                  draft.modifiers.infectionModeEnabled
+                    ? 'border-rose-200 bg-rose-50/40'
+                    : 'border-slate-200 bg-white'
+                }`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-900">
+                      <span className="mr-1.5" aria-hidden="true">🧟</span>
+                      Modo infección
+                    </p>
+                    <p className="mt-0.5 text-xs text-slate-500">
+                      Cuando un buscador pilla a un fugitivo, este pasa a ser buscador en vez de quedar eliminado.
+                    </p>
+                  </div>
+                  <CleanSwitch
+                    checked={Boolean(draft.modifiers.infectionModeEnabled)}
+                    ariaLabel="Alternar modo infección"
+                    onToggle={() =>
+                      setDraft((prev) => ({
+                        ...prev,
+                        modifiers: {
+                          ...prev.modifiers,
+                          infectionModeEnabled: !prev.modifiers.infectionModeEnabled,
+                        },
+                      }))
+                    }
+                  />
+                </div>
               </div>
 
               {/* 2. Victoria por tiempo */}

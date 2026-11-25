@@ -885,6 +885,7 @@ export default function App() {
             roles,
             activeZones,
             caught: {},
+            infected: {},
             rouletteDurationMs,
             seekerOrder,
             hideTimeSec,
@@ -950,36 +951,74 @@ export default function App() {
       if (!baseMatch?.active) return;
 
       const existingCaught = baseMatch.caught || {};
-      if (existingCaught[targetPlayerId]) return;
+      const existingInfected = baseMatch.infected || {};
+      if (existingCaught[targetPlayerId] || existingInfected[targetPlayerId]) {
+        return;
+      }
+
+      const targetRole = baseMatch.roles?.[targetPlayerId] ?? 'hider';
+      const isHunterCatch =
+        byPlayerId !== 'storm' &&
+        byPlayerId !== 'anticheat' &&
+        byPlayerId !== 'photo';
+      const isInfectionCatch =
+        Boolean(baseRules.modifiers?.infectionModeEnabled) && isHunterCatch;
+
+      if (isInfectionCatch && targetRole === 'seeker') {
+        return;
+      }
 
       const nowIso = new Date().toISOString();
-      const nextCaught = {
-        ...existingCaught,
-        [targetPlayerId]: {
-          at: nowIso,
-          byPlayerId,
-        },
-      };
+      const nextCaught = isInfectionCatch
+        ? existingCaught
+        : {
+            ...existingCaught,
+            [targetPlayerId]: {
+              at: nowIso,
+              byPlayerId,
+            },
+          };
+      const nextInfected = isInfectionCatch
+        ? {
+            ...existingInfected,
+            [targetPlayerId]: {
+              at: nowIso,
+              byPlayerId,
+            },
+          }
+        : existingInfected;
+      const nextRoles = isInfectionCatch
+        ? {
+            ...(baseMatch.roles || {}),
+            [targetPlayerId]: 'seeker' as PlayerRole,
+          }
+        : baseMatch.roles || {};
 
-      // Comprobación automática de victoria de buscadores al capturar al último fugitivo activo
+      // Comprobación automática de victoria de buscadores al capturar/infectar al último fugitivo activo
       const activePlayers = latest?.players?.length ? latest.players : players;
-      const roleHiders = Object.entries(baseMatch.roles || {})
-        .filter(([, role]) => role === 'hider')
-        .map(([id]) => id);
       const activePlayerIds = new Set(activePlayers.map((p) => p.id));
-      const hiderIds =
-        activePlayerIds.size > 0
-          ? roleHiders.filter((id) => activePlayerIds.has(id))
-          : roleHiders;
-      const remainingHiders = hiderIds.filter((id) => !nextCaught[id]).length;
+      const hadHiders =
+        Object.entries(baseMatch.roles || {}).some(
+          ([id, role]) =>
+            role === 'hider' &&
+            (activePlayerIds.size === 0 || activePlayerIds.has(id))
+        ) || Object.keys(nextInfected).length > 0;
+      const remainingHiders = Object.entries(nextRoles).filter(
+        ([id, role]) =>
+          role === 'hider' &&
+          (activePlayerIds.size === 0 || activePlayerIds.has(id)) &&
+          !nextCaught[id]
+      ).length;
       const shouldSeekersWin =
-        !baseMatch.winner && hiderIds.length > 0 && remainingHiders === 0;
+        !baseMatch.winner && hadHiders && remainingHiders === 0;
 
       const nextRules: RoomRules = {
         ...baseRules,
         matchState: {
           ...baseMatch,
+          roles: nextRoles,
           caught: nextCaught,
+          infected: nextInfected,
           ...(shouldSeekersWin
             ? {
                 winner: 'seekers' as MatchWinner,
@@ -996,7 +1035,7 @@ export default function App() {
       setGlobalNotice(
         err instanceof Error
           ? err.message
-          : 'No se pudo registrar la eliminación.'
+          : 'No se pudo registrar la captura.'
       );
     }
   };
@@ -1055,7 +1094,16 @@ export default function App() {
       if (!baseMatch?.active) return;
 
       const nextCaught = { ...(baseMatch.caught || {}) };
-      delete nextCaught[targetPlayerId];
+      const nextInfected = { ...(baseMatch.infected || {}) };
+      const nextRoles = { ...(baseMatch.roles || {}) };
+
+      if (nextCaught[targetPlayerId]) {
+        delete nextCaught[targetPlayerId];
+      }
+      if (nextInfected[targetPlayerId]) {
+        delete nextInfected[targetPlayerId];
+        nextRoles[targetPlayerId] = 'hider';
+      }
 
       const shouldClearAllCaughtWin =
         baseMatch.winner === 'seekers' && baseMatch.winReason === 'all_caught';
@@ -1064,7 +1112,9 @@ export default function App() {
         ...baseRules,
         matchState: {
           ...baseMatch,
+          roles: nextRoles,
           caught: nextCaught,
+          infected: nextInfected,
           ...(shouldClearAllCaughtWin
             ? { winner: null, winReason: null, endedAt: null }
             : {}),
@@ -1182,9 +1232,11 @@ export default function App() {
         activePlayerIds.size > 0
           ? roleHiders.filter((id) => activePlayerIds.has(id))
           : roleHiders;
+      const hadHiders =
+        hiderIds.length > 0 || Object.keys(baseMatch.infected || {}).length > 0;
       const remainingHiders = hiderIds.filter((id) => !nextCaught[id]).length;
       const shouldSeekersWin =
-        !baseMatch.winner && hiderIds.length > 0 && remainingHiders === 0;
+        !baseMatch.winner && hadHiders && remainingHiders === 0;
 
       const nextRules: RoomRules = {
         ...baseRules,

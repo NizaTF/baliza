@@ -21,6 +21,7 @@ export const RulesSummary: React.FC<RulesSummaryProps> = ({ rules }) => {
     const m = rules.modifiers;
     const labels: string[] = [];
     if (m?.classicModeEnabled) labels.push('🎮 Clásico');
+    if (m?.infectionModeEnabled) labels.push('🧟 Infección');
     if (rules.timeVictoryEnabled ?? true) labels.push('⏳ Tiempo');
     if (rules.beaconVictoryEnabled ?? true) labels.push('🚩 Baliza');
     if (m?.hunterPhotoEnabled) labels.push('📸 Foto');

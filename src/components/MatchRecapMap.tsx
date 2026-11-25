@@ -12,6 +12,7 @@ import { formatDurationSec, VALENCIA_CENTER } from '../lib/zones';
 import {
   CaughtRecord,
   ExtractionBeacon,
+  InfectedRecord,
   MatchPathPoint,
   PlayerRecapRoute,
   PlayerRecord,
@@ -24,6 +25,7 @@ interface MatchRecapMapProps {
   players: PlayerRecord[];
   roles: Record<string, PlayerRole>;
   caughtMap: Record<string, CaughtRecord>;
+  infectedMap?: Record<string, InfectedRecord>;
   recapRoutes: Record<string, PlayerRecapRoute>;
   activeZones: StormZonePhase[];
   extractionBeacon?: ExtractionBeacon | null;
@@ -79,6 +81,7 @@ export const MatchRecapMap: React.FC<MatchRecapMapProps> = ({
   players,
   roles,
   caughtMap,
+  infectedMap = {},
   recapRoutes,
   activeZones,
   extractionBeacon,
@@ -473,7 +476,11 @@ export const MatchRecapMap: React.FC<MatchRecapMapProps> = ({
                       {p.name}
                     </p>
                     <p className="text-[11px] text-slate-500">
-                      {role === 'seeker' ? 'Buscador' : 'Fugitivo'}
+                      {role === 'seeker'
+                        ? infectedMap[p.id]
+                          ? 'Buscador (infectado)'
+                          : 'Buscador'
+                        : 'Fugitivo'}
                       {caught ? ' · Eliminado' : ''}
                     </p>
                   </div>
