@@ -1,9 +1,17 @@
 import { didPlayerWinMatch } from './matchOutcome';
 import {
+  ACHIEVEMENT_CATALOG,
   loadStatsAndAchievements,
   recordAbilityUsed,
   recordMatchOutcome,
+  resetAchievementsForTests,
 } from './achievements';
+import {
+  ALL_COSMETICS,
+  getCosmeticsForAchievement,
+  sanitizeEquippedCosmetics,
+} from './cosmetics';
+import { safeLocalGet, safeLocalRemove, safeLocalSet } from './safeStorage';
 import {
   computeBearingDeg,
   getCardinalLabel,
@@ -481,9 +489,21 @@ export async function runAllBalizaFeatureTests(): Promise<FeatureTestSuiteReport
 
   await runCase(
     'presets_and_achievements',
-    'Presets custom y Logros locales',
+    'Presets extremos y 20 Logros tryhard',
     () => {
-      assertCondition(BUILT_IN_PRESETS.length >= 3, 'Debe haber presets base.');
+      assertCondition(BUILT_IN_PRESETS.length >= 7, 'Debe incluir los 4 presets extremos.');
+      const noStop = BUILT_IN_PRESETS.find((p) => p.id === 'builtin_no_stop');
+      const blackout = BUILT_IN_PRESETS.find((p) => p.id === 'builtin_blackout');
+      const paparazzi = BUILT_IN_PRESETS.find((p) => p.id === 'builtin_paparazzi');
+      const pandemic = BUILT_IN_PRESETS.find((p) => p.id === 'builtin_pandemic_zero');
+      assertCondition(
+        Boolean(noStop?.rules.modifiers.antiCampEliminate) &&
+          Boolean(blackout?.rules.modifiers.fogEnabled) &&
+          Boolean(paparazzi?.rules.modifiers.hunterPhotoEnabled) &&
+          Boolean(pandemic?.rules.modifiers.infectionModeEnabled),
+        'Todos los presets extremos deben tener sus reglas activas.'
+      );
+
       const listAfterSave = saveCustomPreset('Preset Test Auto', DEFAULT_RULES);
       const created = listAfterSave.find((p) => p.name === 'Preset Test Auto');
       assertCondition(Boolean(created), 'Debe guardar el preset custom.');
@@ -499,24 +519,116 @@ export async function runAllBalizaFeatureTests(): Promise<FeatureTestSuiteReport
         'Debe borrar el preset custom.'
       );
 
-      recordAbilityUsed();
-      recordMatchOutcome({
-        matchKey: `test_ach_${Date.now()}`,
-        didWin: true,
-        myRole: 'seeker',
-        metersWalked: 1200,
-        catchesByMe: 2,
-        infectionsByMe: 1,
-        activatedBeaconByMe: false,
-        contractsCompletedByMe: 1,
-      });
-      const stats = loadStatsAndAchievements();
-      const unlockedCount = stats.achievements.filter((a) => a.unlocked).length;
       assertCondition(
-        stats.stats.matchesPlayed >= 1 && unlockedCount >= 1,
-        'Debe registrar estadísticas y desbloquear logros.'
+        ACHIEVEMENT_CATALOG.length === 20 &&
+          !ACHIEVEMENT_CATALOG.some((a) => a.id === 'first_match' || a.id === 'survivor'),
+        'El catálogo debe tener exactamente 20 logros tryhard sin logros antiguos.'
       );
-      return `${unlockedCount} logro(s) desbloqueados y CRUD de presets OK.`;
+
+      const prevAchievementsBackup = safeLocalGet('baliza_achievements_v2');
+      try {
+        resetAchievementsForTests();
+        recordAbilityUsed();
+        const res1 = recordMatchOutcome({
+          matchKey: `test_nostop_${Date.now()}`,
+          didWin: true,
+          myRole: 'hider',
+          winReason: 'time_expired',
+          metersWalked: 1350,
+          catchesByMe: 0,
+          infectionsByMe: 0,
+          activatedBeaconByMe: false,
+          contractsCompletedByMe: 0,
+          antiCampEliminate: true,
+          hadAntiCampWarning: false,
+          pocketCompassRatio: 0.8,
+        });
+        assertCondition(
+          res1.newlyUnlocked.some((a) => a.id === 'no_stop_win') &&
+            res1.newlyUnlocked.some((a) => a.id === 'pocket_pure_win') &&
+            res1.newlyUnlocked.some((a) => a.id === 'untouchable_time'),
+          'Debe desbloquear Corazón a 200, Modo Bolsillo Puro e Intocable.'
+        );
+
+        const res2 = recordMatchOutcome({
+          matchKey: `test_p0_${Date.now()}`,
+          didWin: true,
+          myRole: 'seeker',
+          winReason: 'all_caught',
+          metersWalked: 900,
+          catchesByMe: 0,
+          infectionsByMe: 3,
+          activatedBeaconByMe: false,
+          contractsCompletedByMe: 3,
+          infectionModeEnabled: true,
+          isInitialSeeker: true,
+          initialSeekersCount: 1,
+          hadFastDoubleInfection: true,
+          hadTechHunterCatch: true,
+          trailEnabled: true,
+        });
+        assertCondition(
+          res2.newlyUnlocked.some((a) => a.id === 'patient_zero_solo') &&
+            res2.newlyUnlocked.some((a) => a.id === 'contract_triple') &&
+            res2.newlyUnlocked.some((a) => a.id === 'double_infection_fast') &&
+            res2.newlyUnlocked.some((a) => a.id === 'tech_hunter'),
+          'Debe desbloquear Paciente Cero Absoluto, Sicario Implacable, Brotes en Cadena y Cazador Tecnológico.'
+        );
+
+        const loaded = loadStatsAndAchievements();
+        const plat = loaded.achievements.find((a) => a.id === 'platinum_master');
+        assertCondition(
+          Boolean(plat && !plat.unlocked && plat.current < 19),
+          'El Platino solo se desbloquea al completar los otros 19 logros.'
+        );
+
+        const missingRewards = ACHIEVEMENT_CATALOG.filter(
+          (a) => getCosmeticsForAchievement(a.id).length === 0
+        );
+        const hasTitle = ALL_COSMETICS.some((c) => c.kind !== 'nameEffect' && c.kind !== 'avatarEffect');
+        assertCondition(
+          missingRewards.length === 0 &&
+            !hasTitle &&
+            ALL_COSMETICS.length === 21 &&
+            getCosmeticsForAchievement('platinum_master').length === 2,
+          'Todos los 20 logros deben otorgar color de texto o efecto de icono (Platino ambos).'
+        );
+
+        const unlockedIds = new Set(
+          loaded.achievements.filter((a) => a.unlocked).map((a) => a.id)
+        );
+        const sanitizedNormal = sanitizeEquippedCosmetics(
+          {
+            nameEffectId: 'name_velocidad',
+            avatarEffectId: 'avatar_platino',
+          },
+          unlockedIds,
+          false
+        );
+        const sanitizedDebug = sanitizeEquippedCosmetics(
+          {
+            nameEffectId: 'name_velocidad',
+            avatarEffectId: 'avatar_platino',
+          },
+          unlockedIds,
+          true
+        );
+        assertCondition(
+          sanitizedNormal.nameEffectId === 'name_velocidad' &&
+            sanitizedNormal.avatarEffectId === undefined &&
+            sanitizedDebug.nameEffectId === 'name_velocidad' &&
+            sanitizedDebug.avatarEffectId === 'avatar_platino',
+          'En modo normal exige desbloqueo y en modo debug permite equipar cualquier cosmético.'
+        );
+
+        return `${BUILT_IN_PRESETS.length} presets, ${loaded.achievements.filter((a) => a.unlocked).length}/20 logros y ${ALL_COSMETICS.length} cosméticos validados.`;
+      } finally {
+        if (prevAchievementsBackup !== null) {
+          safeLocalSet('baliza_achievements_v2', prevAchievementsBackup);
+        } else {
+          safeLocalRemove('baliza_achievements_v2');
+        }
+      }
     }
   );
 

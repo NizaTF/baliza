@@ -1239,6 +1239,44 @@ export const RulesEditor: React.FC<RulesEditorProps> = ({
                       }))
                     }
                   />
+                  <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2">
+                    <div className="min-w-0">
+                      <p className="text-xs font-semibold text-slate-900">
+                        Modo mortal: No pares de correr
+                      </p>
+                      <p className="text-[11px] text-slate-500">
+                        Elimina al instante (fugitivos y buscadores) si se detienen.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      role="switch"
+                      aria-checked={Boolean(draft.modifiers.antiCampEliminate)}
+                      aria-label="Alternar eliminación mortal por quietud"
+                      onClick={() =>
+                        setDraft((prev) => ({
+                          ...prev,
+                          modifiers: {
+                            ...prev.modifiers,
+                            antiCampEliminate: !prev.modifiers.antiCampEliminate,
+                          },
+                        }))
+                      }
+                      className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors ${
+                        draft.modifiers.antiCampEliminate
+                          ? 'bg-rose-600'
+                          : 'bg-slate-300'
+                      }`}
+                    >
+                      <span
+                        className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow-xs transition-transform ${
+                          draft.modifiers.antiCampEliminate
+                            ? 'translate-x-5'
+                            : 'translate-x-0.5'
+                        }`}
+                      />
+                    </button>
+                  </div>
                 </ExtraRuleRow>
 
                 <ExtraRuleRow

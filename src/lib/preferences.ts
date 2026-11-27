@@ -1,4 +1,8 @@
+import { PlayerCosmetics } from '../types/game';
+import { loadStatsAndAchievements } from './achievements';
+import { sanitizeEquippedCosmetics } from './cosmetics';
 import { safeLocalGet, safeLocalSet } from './safeStorage';
+import { isSecretSandboxUnlocked } from './soloSandbox';
 
 export const APP_VERSION = '1.0.0';
 export const APP_AUTHOR = 'NizaTF';
@@ -18,6 +22,7 @@ export interface AppPreferences {
   mapStyle: MapTileStyle;
   vibrationEnabled: boolean;
   reducedMotion: boolean;
+  equippedCosmetics: PlayerCosmetics;
 }
 
 export const DEFAULT_PREFERENCES: AppPreferences = {
@@ -30,6 +35,7 @@ export const DEFAULT_PREFERENCES: AppPreferences = {
   mapStyle: 'standard',
   vibrationEnabled: true,
   reducedMotion: false,
+  equippedCosmetics: {},
 };
 
 const PREFS_STORAGE_KEY = 'baliza_app_preferences_v1';
@@ -40,10 +46,23 @@ function clampVolume(value: unknown, fallback: number): number {
   return Math.max(0, Math.min(100, Math.round(value)));
 }
 
+function normalizeCosmeticsRaw(raw: unknown): PlayerCosmetics {
+  if (!raw || typeof raw !== 'object') return {};
+  const obj = raw as Record<string, unknown>;
+  const out: PlayerCosmetics = {};
+  if (typeof obj.nameEffectId === 'string' && obj.nameEffectId) {
+    out.nameEffectId = obj.nameEffectId;
+  }
+  if (typeof obj.avatarEffectId === 'string' && obj.avatarEffectId) {
+    out.avatarEffectId = obj.avatarEffectId;
+  }
+  return out;
+}
+
 export function loadPreferences(): AppPreferences {
   try {
     const raw = safeLocalGet(PREFS_STORAGE_KEY);
-    if (!raw) return { ...DEFAULT_PREFERENCES };
+    if (!raw) return { ...DEFAULT_PREFERENCES, equippedCosmetics: {} };
     const parsed = JSON.parse(raw) as Partial<AppPreferences>;
     return {
       theme:
@@ -76,10 +95,24 @@ export function loadPreferences(): AppPreferences {
         typeof parsed.reducedMotion === 'boolean'
           ? parsed.reducedMotion
           : DEFAULT_PREFERENCES.reducedMotion,
+      equippedCosmetics: normalizeCosmeticsRaw(parsed.equippedCosmetics),
     };
   } catch {
-    return { ...DEFAULT_PREFERENCES };
+    return { ...DEFAULT_PREFERENCES, equippedCosmetics: {} };
   }
+}
+
+export function getEquippedCosmetics(): PlayerCosmetics {
+  const prefs = loadPreferences();
+  const { achievements } = loadStatsAndAchievements();
+  const unlockedIds = new Set(
+    achievements.filter((a) => a.unlocked).map((a) => a.id)
+  );
+  return sanitizeEquippedCosmetics(
+    prefs.equippedCosmetics,
+    unlockedIds,
+    isSecretSandboxUnlocked()
+  );
 }
 
 export function applyPreferencesToDocument(prefs: AppPreferences): void {
@@ -95,6 +128,7 @@ export function savePreferences(prefs: AppPreferences): AppPreferences {
     ...prefs,
     musicVolume: clampVolume(prefs.musicVolume, DEFAULT_PREFERENCES.musicVolume),
     sfxVolume: clampVolume(prefs.sfxVolume, DEFAULT_PREFERENCES.sfxVolume),
+    equippedCosmetics: normalizeCosmeticsRaw(prefs.equippedCosmetics),
   };
   safeLocalSet(PREFS_STORAGE_KEY, JSON.stringify(normalized));
   applyPreferencesToDocument(normalized);

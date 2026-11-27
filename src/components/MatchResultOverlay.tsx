@@ -12,6 +12,7 @@ import {
   X,
 } from 'lucide-react';
 import { AchievementDef, recordMatchOutcome } from '../lib/achievements';
+import { cosmeticKindLabel, getCosmeticsForAchievement } from '../lib/cosmetics';
 import { didPlayerWinMatch } from '../lib/matchOutcome';
 import { playMatchResultTheme, unlockRetroAudio } from '../lib/retroAudio';
 import {
@@ -20,6 +21,7 @@ import {
   InfectedRecord,
   MatchWinReason,
   MatchWinner,
+  PlayerCosmetics,
   PlayerRecapRoute,
   PlayerRecord,
   PlayerRole,
@@ -27,6 +29,28 @@ import {
 } from '../types/game';
 import { MatchRecapMap } from './MatchRecapMap';
 import { PlayerAvatar } from './PlayerAvatar';
+import { PlayerCosmeticName } from './PlayerCosmeticName';
+
+export interface MatchAchievementContext {
+  antiCampEliminate?: boolean;
+  hadAntiCampWarning?: boolean;
+  fogEnabled?: boolean;
+  fogRadiusM?: number;
+  radarEnabled?: boolean;
+  photoCompletedByMe?: boolean;
+  nearestSeekerDistAtEndM?: number | null;
+  reachedFinalZone?: boolean;
+  stormOutsideTotalSec?: number;
+  timeRemainingAtEndSec?: number | null;
+  panicEndgameEnabled?: boolean;
+  myAbilityUses?: number;
+  usedDecoy?: boolean;
+  usedCloak?: boolean;
+  hadTechHunterCatch?: boolean;
+  pocketCompassRatio?: number;
+  trailEnabled?: boolean;
+  hotColdEnabled?: boolean;
+}
 
 interface MatchResultOverlayProps {
   winner: MatchWinner;
@@ -46,6 +70,8 @@ interface MatchResultOverlayProps {
   recapRoutes?: Record<string, PlayerRecapRoute>;
   activeZones?: StormZonePhase[];
   matchDurationSec?: number;
+  playerCosmetics?: Record<string, PlayerCosmetics>;
+  achievementContext?: MatchAchievementContext;
   onEndMatch: () => Promise<void>;
   onDismiss: () => void;
 }
@@ -156,6 +182,8 @@ export const MatchResultOverlay: React.FC<MatchResultOverlayProps> = ({
   recapRoutes = {},
   activeZones = [],
   matchDurationSec = 60,
+  playerCosmetics = {},
+  achievementContext = {},
   onEndMatch,
   onDismiss,
 }) => {
@@ -198,15 +226,64 @@ export const MatchResultOverlay: React.FC<MatchResultOverlayProps> = ({
       extractionBeacon?.activatedByPlayerId === currentPlayerId;
     const contractsCompletedByMe = contractsCompletedBy[currentPlayerId] ?? 0;
 
+    const myInfectionTimes = Object.values(infectedMap)
+      .filter((i) => i.byPlayerId === currentPlayerId)
+      .map((i) => new Date(i.at).getTime())
+      .filter((t) => !Number.isNaN(t))
+      .sort((a, b) => a - b);
+    const hadFastDoubleInfection = myInfectionTimes.some(
+      (t, idx) => idx > 0 && t - myInfectionTimes[idx - 1] <= 45000
+    );
+
+    const nonSystemEvents = [
+      ...Object.values(caughtMap),
+      ...Object.values(infectedMap),
+    ]
+      .filter(
+        (ev) =>
+          ev.byPlayerId !== 'storm' &&
+          ev.byPlayerId !== 'anticheat' &&
+          ev.byPlayerId !== 'photo' &&
+          ev.byPlayerId !== 'camp'
+      )
+      .map((ev) => ({
+        byPlayerId: ev.byPlayerId,
+        ms: new Date(ev.at).getTime(),
+      }))
+      .filter((ev) => !Number.isNaN(ev.ms))
+      .sort((a, b) => b.ms - a.ms);
+    const caughtLastHiderByMe =
+      nonSystemEvents.length > 0 &&
+      nonSystemEvents[0].byPlayerId === currentPlayerId;
+
+    const aliveHidersAtEnd = players.filter(
+      (p) => (roles[p.id] ?? 'hider') === 'hider' && !caughtMap[p.id]
+    ).length;
+    const totalSeekersAtEnd = players.filter(
+      (p) => (roles[p.id] ?? 'hider') === 'seeker' && !caughtMap[p.id]
+    ).length;
+
     const { newlyUnlocked } = recordMatchOutcome({
       matchKey: matchKey || `${players.length}-${Math.round(matchDurationSec)}`,
       didWin: didIWin,
       myRole,
+      winReason,
       metersWalked,
       catchesByMe,
       infectionsByMe,
       activatedBeaconByMe,
       contractsCompletedByMe,
+      wasEliminated: Boolean(caughtMap[currentPlayerId]),
+      infectionModeEnabled,
+      isInitialSeeker:
+        effectiveInitialSeekers.includes(currentPlayerId) &&
+        !infectedMap[currentPlayerId],
+      initialSeekersCount: effectiveInitialSeekers.length,
+      aliveHidersAtEnd,
+      totalSeekersAtEnd,
+      hadFastDoubleInfection,
+      caughtLastHiderByMe,
+      ...achievementContext,
     });
     if (newlyUnlocked.length > 0) {
       setUnlockedAchievements(newlyUnlocked);
@@ -216,13 +293,18 @@ export const MatchResultOverlay: React.FC<MatchResultOverlayProps> = ({
     matchKey,
     didIWin,
     myRole,
+    winReason,
     caughtMap,
     infectedMap,
     recapRoutes,
     extractionBeacon,
     contractsCompletedBy,
-    players.length,
+    players,
+    roles,
+    infectionModeEnabled,
+    effectiveInitialSeekers,
     matchDurationSec,
+    achievementContext,
   ]);
 
   const bannerWord = useMemo(
@@ -563,7 +645,9 @@ export const MatchResultOverlay: React.FC<MatchResultOverlayProps> = ({
 
   const reasonText =
     winReason === 'all_caught'
-      ? infectionModeEnabled
+      ? winner === 'hiders'
+        ? 'Todos los buscadores fueron eliminados por quietud.'
+        : infectionModeEnabled
         ? 'Todos han sido infectados. Solo gana quien empezó infectado; los infectados pierden.'
         : 'Todos los fugitivos han sido eliminados.'
       : winReason === 'beacon_extracted'
@@ -878,20 +962,31 @@ export const MatchResultOverlay: React.FC<MatchResultOverlayProps> = ({
               </div>
 
               {unlockedAchievements.length > 0 && (
-                <div className="rounded-xl border border-amber-200 bg-amber-50/80 px-3.5 py-2.5 space-y-1">
+                <div className="rounded-xl border border-amber-200 bg-amber-50/80 px-3.5 py-2.5 space-y-1.5">
                   <p className="text-[11px] font-bold uppercase tracking-wider text-amber-800">
-                    🏆 Logros desbloqueados
+                    🏆 Logros desbloqueados (equípalos en Ajustes)
                   </p>
                   <div className="flex flex-wrap gap-2">
-                    {unlockedAchievements.map((ach) => (
-                      <span
-                        key={ach.id}
-                        className="inline-flex items-center gap-1.5 rounded-lg bg-white px-2.5 py-1 text-xs font-semibold text-slate-900 shadow-xs"
-                      >
-                        <span aria-hidden="true">{ach.icon}</span>
-                        <span>{ach.title}</span>
-                      </span>
-                    ))}
+                    {unlockedAchievements.map((ach) => {
+                      const rewards = getCosmeticsForAchievement(ach.id);
+                      return (
+                        <span
+                          key={ach.id}
+                          className="inline-flex flex-wrap items-center gap-1.5 rounded-lg bg-white px-2.5 py-1 text-xs font-semibold text-slate-900 shadow-xs"
+                        >
+                          <span aria-hidden="true">{ach.icon}</span>
+                          <span>{ach.title}</span>
+                          {rewards.map((rw) => (
+                            <span
+                              key={rw.id}
+                              className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-900"
+                            >
+                              +{cosmeticKindLabel(rw.kind)}: {rw.label}
+                            </span>
+                          ))}
+                        </span>
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -907,6 +1002,7 @@ export const MatchResultOverlay: React.FC<MatchResultOverlayProps> = ({
                     {hiders.map((p) => {
                       const caught = caughtMap[p.id];
                       const isActivator = extractionBeacon?.activatedByPlayerId === p.id;
+                      const pCosmetics = playerCosmetics[p.id];
                       return (
                         <li
                           key={p.id}
@@ -919,14 +1015,14 @@ export const MatchResultOverlay: React.FC<MatchResultOverlayProps> = ({
                               size="sm"
                               name={p.name}
                               eliminated={Boolean(caught)}
+                              avatarEffectId={pCosmetics?.avatarEffectId}
                             />
-                            <span
-                              className={`truncate text-sm font-semibold ${
-                                caught ? 'line-through text-slate-400' : 'text-slate-900'
-                              }`}
-                            >
-                              {p.name}
-                            </span>
+                            <PlayerCosmeticName
+                              name={p.name}
+                              cosmetics={pCosmetics}
+                              eliminated={Boolean(caught)}
+                              compactTitle
+                            />
                           </div>
                           <span
                             className={`text-xs font-medium shrink-0 ${
@@ -946,6 +1042,8 @@ export const MatchResultOverlay: React.FC<MatchResultOverlayProps> = ({
                                 ? 'GPS apagado'
                                 : caught.byPlayerId === 'photo'
                                 ? 'Sin foto'
+                                : caught.byPlayerId === 'camp'
+                                ? 'Quietud'
                                 : 'Pillado'
                               : 'A salvo'}
                           </span>
@@ -962,6 +1060,8 @@ export const MatchResultOverlay: React.FC<MatchResultOverlayProps> = ({
                   </p>
                   <ul className="divide-y divide-slate-100 border-t border-slate-100">
                     {seekers.map((p) => {
+                      const seekerCaught = caughtMap[p.id];
+                      const pCosmetics = playerCosmetics[p.id];
                       const catchesCount =
                         Object.values(caughtMap).filter(
                           (c) => c.byPlayerId === p.id
@@ -986,19 +1086,32 @@ export const MatchResultOverlay: React.FC<MatchResultOverlayProps> = ({
                               color={p.color}
                               size="sm"
                               name={p.name}
+                              eliminated={Boolean(seekerCaught)}
+                              avatarEffectId={pCosmetics?.avatarEffectId}
                             />
                             <div className="min-w-0">
-                              <span className="block truncate text-sm font-semibold text-slate-900">
-                                {p.name}
-                              </span>
-                              {wasInfected && (
+                              <PlayerCosmeticName
+                                name={p.name}
+                                cosmetics={pCosmetics}
+                                eliminated={Boolean(seekerCaught)}
+                                compactTitle
+                              />
+                              {seekerCaught && (
+                                <span className="block text-[11px] font-medium text-slate-500">
+                                  Eliminado ·{' '}
+                                  {seekerCaught.byPlayerId === 'camp'
+                                    ? 'Quietud'
+                                    : 'Fuera'}
+                                </span>
+                              )}
+                              {!seekerCaught && wasInfected && (
                                 <span className="block text-[11px] font-medium text-rose-600">
                                   {infectionModeEnabled && winner === 'seekers'
                                     ? 'Infectado · Pierde'
                                     : 'Infectado'}
                                 </span>
                               )}
-                              {isOriginalWinner && (
+                              {!seekerCaught && isOriginalWinner && (
                                 <span className="block text-[11px] font-semibold text-emerald-700">
                                   Infectado inicial · ¡Gana!
                                 </span>

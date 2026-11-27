@@ -6,8 +6,9 @@ import {
   startRouletteMusicLoop,
   unlockRetroAudio,
 } from '../lib/retroAudio';
-import { PlayerRecord } from '../types/game';
+import { PlayerCosmetics, PlayerRecord } from '../types/game';
 import { PlayerAvatar } from './PlayerAvatar';
+import { PlayerCosmeticName } from './PlayerCosmeticName';
 
 interface SeekerRouletteOverlayProps {
   players: PlayerRecord[];
@@ -16,6 +17,7 @@ interface SeekerRouletteOverlayProps {
   startMs: number;
   totalDurationMs: number;
   clockOffsetMs?: number;
+  playerCosmetics?: Record<string, PlayerCosmetics>;
 }
 
 export const ROULETTE_ROUND_MS = 7200;
@@ -35,6 +37,7 @@ export const SeekerRouletteOverlay: React.FC<SeekerRouletteOverlayProps> = ({
   startMs,
   totalDurationMs,
   clockOffsetMs = 0,
+  playerCosmetics = {},
 }) => {
   const totalSeekers = Math.max(1, seekerOrder.length);
   const roundsEndMs = totalSeekers * ROULETTE_ROUND_MS;
@@ -331,10 +334,14 @@ export const SeekerRouletteOverlay: React.FC<SeekerRouletteOverlayProps> = ({
                         color={p.color}
                         size="md"
                         name={p.name}
+                        avatarEffectId={playerCosmetics[p.id]?.avatarEffectId}
                       />
-                      <span className="w-full truncate text-center font-display text-xs font-bold text-white">
-                        {p.name}
-                      </span>
+                      <PlayerCosmeticName
+                        name={p.name}
+                        cosmetics={playerCosmetics[p.id]}
+                        compactTitle
+                        className="w-full truncate text-center font-display text-xs font-bold text-white"
+                      />
                     </div>
                   );
                 })}
@@ -438,11 +445,21 @@ export const SeekerRouletteOverlay: React.FC<SeekerRouletteOverlayProps> = ({
                     color={p.color}
                     size="sm"
                     name={p.name}
+                    avatarEffectId={playerCosmetics[p.id]?.avatarEffectId}
                   />
-                  <span className="font-display text-xs font-bold text-white">
-                    {p.name}
-                    {p.id === currentPlayerId ? ' (Tú)' : ''}
-                  </span>
+                  <PlayerCosmeticName
+                    name={p.name}
+                    cosmetics={playerCosmetics[p.id]}
+                    compactTitle
+                    className="font-display text-xs font-bold text-white"
+                    suffix={
+                      p.id === currentPlayerId ? (
+                        <span className="text-[11px] font-semibold text-[#FF85B3]">
+                          (Tú)
+                        </span>
+                      ) : undefined
+                    }
+                  />
                 </div>
               );
             })}

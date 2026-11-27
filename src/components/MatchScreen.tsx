@@ -87,6 +87,7 @@ import {
 import {
   APP_AUTHOR,
   APP_VERSION,
+  getEquippedCosmetics,
   getMapTileSpec,
   loadPreferences,
   subscribePreferences,
@@ -119,6 +120,7 @@ import {
   pickBotChatMessage,
   setSecretSandboxUnlocked,
   stepBotVectors,
+  subscribeSecretSandbox,
 } from '../lib/soloSandbox';
 import { EliminationOverlay } from './EliminationOverlay';
 import { InfectionOverlay } from './InfectionOverlay';
@@ -126,6 +128,7 @@ import { MatchChatDrawer } from './MatchChatDrawer';
 import { MatchResultOverlay } from './MatchResultOverlay';
 import { getPixelSkullSvgHtml, PixelSkull } from './PixelSkull';
 import { PlayerAvatar } from './PlayerAvatar';
+import { PlayerCosmeticName } from './PlayerCosmeticName';
 import { SeekerHoldOverlay } from './SeekerHoldOverlay';
 import { SeekerRouletteOverlay } from './SeekerRouletteOverlay';
 import { SettingsPanel } from './SettingsPanel';
@@ -141,7 +144,7 @@ interface MatchScreenProps {
   onRecheckLocation?: () => Promise<void>;
   onMarkCaught: (
     targetPlayerId: string,
-    byPlayerId: string | 'storm' | 'anticheat' | 'photo'
+    byPlayerId: string | 'storm' | 'anticheat' | 'photo' | 'camp'
   ) => Promise<void>;
   onUndoCaught: (targetPlayerId: string) => Promise<void>;
   onStartPhotoChallenge: (windowSec: number) => Promise<void>;
@@ -273,6 +276,7 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
   const stealthStillEnabled = Boolean(mods?.stealthStillEnabled);
   const stealthStillDelaySec = mods?.stealthStillDelaySec ?? 10;
   const antiCampEnabled = Boolean(mods?.antiCampEnabled);
+  const antiCampEliminate = Boolean(mods?.antiCampEliminate);
   const antiCampLimitSec = mods?.antiCampLimitSec ?? 45;
   const antiCampRadiusM = mods?.antiCampRadiusM ?? 12;
   const hotColdEnabled = Boolean(mods?.hotColdEnabled);
@@ -351,6 +355,31 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
   const [notifPerm, setNotifPerm] = useState(() =>
     getNotificationPermissionStatus()
   );
+  const [myEquippedCosmetics, setMyEquippedCosmetics] = useState(() =>
+    getEquippedCosmetics()
+  );
+
+  useEffect(() => {
+    const unsubPrefs = subscribePreferences(() => {
+      setMyEquippedCosmetics(getEquippedCosmetics());
+    });
+    const unsubSandbox = subscribeSecretSandbox(() => {
+      setMyEquippedCosmetics(getEquippedCosmetics());
+    });
+    return () => {
+      unsubPrefs();
+      unsubSandbox();
+    };
+  }, []);
+
+  const effectivePlayerCosmetics = useMemo(
+    () => ({
+      ...(room.rules.playerCosmetics || {}),
+      [currentPlayerId]: myEquippedCosmetics,
+    }),
+    [room.rules.playerCosmetics, currentPlayerId, myEquippedCosmetics]
+  );
+
   const gpsFilterRef = useRef<GpsFilterState>(createGpsFilterState());
   const lastPocketVoiceAtRef = useRef<number>(0);
 
@@ -444,6 +473,23 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
   const prevPhaseRef = useRef<'roulette' | 'hiding' | 'hunting' | null>(null);
   const lastHideTickSecRef = useRef<number | null>(null);
   const lastEndgameTickSecRef = useRef<number | null>(null);
+  const campEliminationSentRef = useRef(false);
+  const hadAntiCampWarningRef = useRef(false);
+  const stormOutsideTotalMsRef = useRef(0);
+  const pocketActiveMsRef = useRef(0);
+  const pocketTotalMsRef = useRef(0);
+  const lastTelemetryTickMsRef = useRef<number>(Date.now());
+  const reachedFinalZoneRef = useRef(false);
+  const usedAbilityKindsRef = useRef<{ decoy: boolean; cloak: boolean }>({
+    decoy: false,
+    cloak: false,
+  });
+  const lastTechAbilityAtMsRef = useRef<number>(0);
+  const hadTechHunterCatchRef = useRef(false);
+  const endSnapshotTelemetryRef = useRef<{
+    nearestSeekerDistM: number | null;
+    timeRemainingSec: number | null;
+  }>({ nearestSeekerDistM: null, timeRemainingSec: null });
 
   const clockOffsetRef = useRef(clockOffsetMs);
 
@@ -556,10 +602,19 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
         setCaptureToast(`${targetName} ha sido eliminado por desactivar la ubicación.`);
       } else if (rec?.byPlayerId === 'photo') {
         setCaptureToast(`${targetName} eliminado por no hacerse la foto con el cazador.`);
+      } else if (rec?.byPlayerId === 'camp') {
+        setCaptureToast(`${targetName} ha sido eliminado por quedarse quieto.`);
       } else {
         const hunterName =
           players.find((p) => p.id === rec?.byPlayerId)?.name || 'Un buscador';
         setCaptureToast(`${hunterName} ha eliminado a ${targetName}.`);
+        if (
+          rec?.byPlayerId === currentPlayerId &&
+          lastTechAbilityAtMsRef.current > 0 &&
+          Date.now() - lastTechAbilityAtMsRef.current <= 20000
+        ) {
+          hadTechHunterCatchRef.current = true;
+        }
       }
 
       // Sonido global para todos los jugadores cuando alguien es eliminado
@@ -616,6 +671,14 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
           ? '🧟 ¡Te han infectado! Ahora pasas a pillar como Buscador.'
           : `🧟 ${hunterName} infectó a ${targetName}. ¡Ahora es buscador!`
       );
+
+      if (
+        rec?.byPlayerId === currentPlayerId &&
+        lastTechAbilityAtMsRef.current > 0 &&
+        Date.now() - lastTechAbilityAtMsRef.current <= 20000
+      ) {
+        hadTechHunterCatchRef.current = true;
+      }
 
       if (!selfInfected) {
         playGlobalInfectionAlert();
@@ -1149,15 +1212,16 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
 
   const antiCampElapsedSec =
     antiCampEnabled &&
-    myRole === 'hider' &&
+    (antiCampEliminate || myRole === 'hider') &&
     isHuntPhase &&
     !myCaughtRecord &&
+    !matchWinner &&
     motionAnchorRef.current !== null
       ? Math.max(0, (nowMs - motionAnchorRef.current.sinceMs) / 1000)
       : 0;
   const antiCampWarningLeadSec = Math.min(
     15,
-    Math.max(5, Math.floor(antiCampLimitSec / 3))
+    Math.max(4, Math.floor(antiCampLimitSec / 2))
   );
   const isMyCampExposed = antiCampEnabled && antiCampElapsedSec >= antiCampLimitSec;
   const antiCampWarningSec =
@@ -1166,6 +1230,96 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
     antiCampElapsedSec < antiCampLimitSec
       ? Math.ceil(antiCampLimitSec - antiCampElapsedSec)
       : null;
+
+  useEffect(() => {
+    if (antiCampWarningSec !== null || isMyCampExposed) {
+      hadAntiCampWarningRef.current = true;
+    }
+  }, [antiCampWarningSec, isMyCampExposed]);
+
+  useEffect(() => {
+    if (!isMyCampExposed) {
+      campEliminationSentRef.current = false;
+      return;
+    }
+    if (
+      antiCampEnabled &&
+      antiCampEliminate &&
+      isHuntPhase &&
+      !matchWinner &&
+      !myCaughtRecord &&
+      !campEliminationSentRef.current
+    ) {
+      campEliminationSentRef.current = true;
+      void onMarkCaught(currentPlayerId, 'camp');
+    }
+  }, [
+    isMyCampExposed,
+    antiCampEnabled,
+    antiCampEliminate,
+    isHuntPhase,
+    matchWinner,
+    myCaughtRecord,
+    currentPlayerId,
+    onMarkCaught,
+  ]);
+
+  // Telemetría ligera para logros tryhard (tormenta, zona final, brújula, buscador más cercano)
+  useEffect(() => {
+    const now = Date.now();
+    const dtMs = Math.min(1000, Math.max(0, now - lastTelemetryTickMsRef.current));
+    lastTelemetryTickMsRef.current = now;
+
+    if (matchWinner) return;
+
+    if (isHuntPhase && !myCaughtRecord) {
+      if (isInStorm) {
+        stormOutsideTotalMsRef.current += dtMs;
+      }
+      pocketTotalMsRef.current += dtMs;
+      if (pocketCompassOn) {
+        pocketActiveMsRef.current += dtMs;
+      }
+      if (activeZones.length > 0 && snapshot.phaseIndex >= activeZones.length - 1) {
+        reachedFinalZoneRef.current = true;
+      }
+    }
+
+    let nearestSeekerDistM: number | null = null;
+    if (myPos && myRole === 'hider') {
+      let best = Infinity;
+      players.forEach((p) => {
+        if ((match?.roles?.[p.id] ?? 'hider') !== 'seeker' || caughtMap[p.id]) return;
+        const loc = otherLocations[p.id];
+        if (!loc || now - loc.updatedAt > 45000) return;
+        const d = distanceMeters(myPos.lat, myPos.lng, loc.lat, loc.lng);
+        if (d < best) best = d;
+      });
+      if (Number.isFinite(best)) {
+        nearestSeekerDistM = Math.round(best);
+      }
+    }
+    endSnapshotTelemetryRef.current = {
+      nearestSeekerDistM,
+      timeRemainingSec: Math.round(roundRemainingSec),
+    };
+  }, [
+    nowMs,
+    matchWinner,
+    isHuntPhase,
+    myCaughtRecord,
+    isInStorm,
+    pocketCompassOn,
+    activeZones.length,
+    snapshot.phaseIndex,
+    myPos,
+    myRole,
+    players,
+    match?.roles,
+    caughtMap,
+    otherLocations,
+    roundRemainingSec,
+  ]);
 
   useEffect(() => {
     if (!myPos || myCaughtRecord) return;
@@ -1617,9 +1771,18 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
       return;
     }
 
+    const activeSeekersCount = players.filter(
+      (p) => (match?.roles?.[p.id] ?? 'hider') === 'seeker' && !caughtMap[p.id]
+    ).length;
     let pendingWin: { winner: MatchWinner; reason: MatchWinReason } | null = null;
     if (hadAnyHiders && hiderStats.activeHiders === 0) {
       pendingWin = { winner: 'seekers', reason: 'all_caught' };
+    } else if (
+      hiderStats.activeHiders > 0 &&
+      hiderStats.seekersCount > 0 &&
+      activeSeekersCount === 0
+    ) {
+      pendingWin = { winner: 'hiders', reason: 'all_caught' };
     } else if (isTimeLimitReached && hiderStats.activeHiders > 0) {
       pendingWin = { winner: 'hiders', reason: 'time_expired' };
     }
@@ -2744,6 +2907,9 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
       } else if (rec.byPlayerId === 'photo') {
         title = `${targetName} fue eliminado`;
         detail = 'No completó el reto foto a tiempo.';
+      } else if (rec.byPlayerId === 'camp') {
+        title = `${targetName} fue eliminado`;
+        detail = 'Se quedó quieto demasiado tiempo.';
       } else {
         const hunterName =
           players.find((p) => p.id === rec.byPlayerId)?.name || 'Un buscador';
@@ -2842,6 +3008,9 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
     }
     if (myCaughtRecord.byPlayerId === 'photo') {
       return 'ELIMINADO · SIN FOTO CON EL CAZADOR';
+    }
+    if (myCaughtRecord.byPlayerId === 'camp') {
+      return 'ELIMINADO · QUIETUD EXCEDIDA';
     }
     const hunterName =
       players.find((p) => p.id === myCaughtRecord.byPlayerId)?.name ||
@@ -3326,10 +3495,13 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
       triggerHaptic([24, 30, 24]);
 
       if (kind === 'decoy') {
+        usedAbilityKindsRef.current.decoy = true;
         triggerAbilityToast('🎭 Señuelo desplegado (25 s).');
       } else if (kind === 'cloak') {
+        usedAbilityKindsRef.current.cloak = true;
         triggerAbilityToast('🫥 Silencio de radar activo (20 s).');
       } else if (kind === 'sonar') {
+        lastTechAbilityAtMsRef.current = Date.now();
         if (myPos) {
           const now = Date.now();
           const range = Math.max(250, radarRangeM);
@@ -3383,6 +3555,7 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
           );
         }
       } else if (kind === 'scan') {
+        lastTechAbilityAtMsRef.current = Date.now();
         setQuickScanUntilMs(syncedNowMs + 7000);
         playRadarSweepPing(1);
         triggerAbilityToast('⚡ Rastreo rápido activo (7 s).');
@@ -3916,7 +4089,11 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
               <span>
                 🚨{' '}
                 {isMyCampExposed
-                  ? 'Visible en el mapa por quedarte quieto'
+                  ? antiCampEliminate
+                    ? 'Eliminado por quedarte quieto'
+                    : 'Visible en el mapa por quedarte quieto'
+                  : antiCampEliminate
+                  ? `¡No pares! Muévete en ${antiCampWarningSec}s o serás eliminado`
                   : `Muévete en ${antiCampWarningSec}s o aparecerás en el mapa`}
               </span>
             </div>
@@ -4487,7 +4664,8 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
                         caughtInfo &&
                         caughtInfo.byPlayerId !== 'storm' &&
                         caughtInfo.byPlayerId !== 'anticheat' &&
-                        caughtInfo.byPlayerId !== 'photo'
+                        caughtInfo.byPlayerId !== 'photo' &&
+                        caughtInfo.byPlayerId !== 'camp'
                           ? players.find((x) => x.id === caughtInfo.byPlayerId)
                               ?.name || 'Buscador'
                           : null;
@@ -4521,6 +4699,8 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
                       const hiderCanReportSelf =
                         isSelf && myRole === 'hider' && !caughtInfo;
 
+                      const pCosmetics = effectivePlayerCosmetics[p.id];
+
                       return (
                         <li
                           key={p.id}
@@ -4536,17 +4716,15 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
                                 size="sm"
                                 name={p.name}
                                 eliminated={Boolean(caughtInfo)}
+                                avatarEffectId={pCosmetics?.avatarEffectId}
                               />
                               <div className="min-w-0">
-                                <p
-                                  className={`truncate text-sm font-semibold ${
-                                    caughtInfo
-                                      ? 'line-through text-slate-400'
-                                      : 'text-slate-900'
-                                  }`}
-                                >
-                                  {p.name}
-                                </p>
+                                <PlayerCosmeticName
+                                  name={p.name}
+                                  cosmetics={pCosmetics}
+                                  eliminated={Boolean(caughtInfo)}
+                                  compactTitle
+                                />
                                 <p className="text-xs text-slate-500">
                                   {p.is_host && (
                                     <span className="inline-flex items-center gap-0.5 text-amber-600 mr-1.5">
@@ -4567,6 +4745,8 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
                                         ? 'Eliminado · GPS apagado'
                                         : caughtInfo.byPlayerId === 'photo'
                                         ? 'Eliminado · Sin foto'
+                                        : caughtInfo.byPlayerId === 'camp'
+                                        ? 'Eliminado · Quietud'
                                         : `Eliminado · Pillado por ${catcherName}`}
                                     </span>
                                   )}
@@ -5647,6 +5827,34 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
             recapRoutes={recapRoutes}
             activeZones={activeZones}
             matchDurationSec={recapMatchDurationSec}
+            playerCosmetics={effectivePlayerCosmetics}
+            achievementContext={{
+              antiCampEliminate,
+              hadAntiCampWarning: hadAntiCampWarningRef.current,
+              fogEnabled,
+              fogRadiusM,
+              radarEnabled,
+              photoCompletedByMe: myPhotoStatus === 'accepted',
+              nearestSeekerDistAtEndM:
+                endSnapshotTelemetryRef.current.nearestSeekerDistM,
+              reachedFinalZone: reachedFinalZoneRef.current,
+              stormOutsideTotalSec: Math.round(
+                stormOutsideTotalMsRef.current / 1000
+              ),
+              timeRemainingAtEndSec:
+                endSnapshotTelemetryRef.current.timeRemainingSec,
+              panicEndgameEnabled,
+              myAbilityUses,
+              usedDecoy: usedAbilityKindsRef.current.decoy,
+              usedCloak: usedAbilityKindsRef.current.cloak,
+              hadTechHunterCatch: hadTechHunterCatchRef.current,
+              pocketCompassRatio:
+                pocketTotalMsRef.current > 0
+                  ? pocketActiveMsRef.current / pocketTotalMsRef.current
+                  : 0,
+              trailEnabled,
+              hotColdEnabled,
+            }}
             onEndMatch={onEndMatch}
             onDismiss={() => setResultDismissed(true)}
           />
@@ -5675,6 +5883,7 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
           startMs={startMs}
           totalDurationMs={rouletteDurationMs}
           clockOffsetMs={clockOffsetMs}
+          playerCosmetics={effectivePlayerCosmetics}
         />
       )}
 

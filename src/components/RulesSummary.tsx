@@ -30,7 +30,11 @@ export const RulesSummary: React.FC<RulesSummaryProps> = ({ rules }) => {
     if (m?.radarEnabled) labels.push('📡 Radar');
     if (m?.trailEnabled) labels.push('👣 Rastro');
     if (m?.stealthStillEnabled) labels.push('🥷 Sigilo');
-    if (m?.antiCampEnabled) labels.push('🚨 Anti-camper');
+    if (m?.antiCampEnabled) {
+      labels.push(
+        m?.antiCampEliminate ? '🏃 No pares (Mortal)' : '🚨 Anti-camper'
+      );
+    }
     if (m?.hotColdEnabled) labels.push('🌡️ Frío/Caliente');
     if (m?.panicEndgameEnabled) labels.push('⚡ Recta final');
     if (m?.testJoystickEnabled ?? true) labels.push('🕹️ Mando virtual');

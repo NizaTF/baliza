@@ -40,7 +40,7 @@ export interface ExtractionBeacon {
 
 export interface CaughtRecord {
   at: string;
-  byPlayerId: string | 'storm' | 'anticheat' | 'photo';
+  byPlayerId: string | 'storm' | 'anticheat' | 'photo' | 'camp';
 }
 
 export interface InfectedRecord {
@@ -133,6 +133,7 @@ export interface RoomModifiers {
   stealthStillEnabled?: boolean;
   stealthStillDelaySec?: number;
   antiCampEnabled?: boolean;
+  antiCampEliminate?: boolean;
   antiCampLimitSec?: number;
   antiCampRadiusM?: number;
   hotColdEnabled?: boolean;
@@ -162,6 +163,11 @@ export interface PlayerLocationPayload {
   campExposed?: boolean;
 }
 
+export interface PlayerCosmetics {
+  nameEffectId?: string;
+  avatarEffectId?: string;
+}
+
 export interface RoomRules {
   roundDuration: RoundDuration;
   seekersCount: SeekersCount;
@@ -178,6 +184,7 @@ export interface RoomRules {
   roomLocked?: boolean;
   zonesConfig?: ZonesConfig;
   manualRoles?: Record<string, PlayerRole>;
+  playerCosmetics?: Record<string, PlayerCosmetics>;
   lobbyCountdown?: {
     startedAt: string;
     durationSec: number;
@@ -310,6 +317,7 @@ export const DEFAULT_RULES: RoomRules = {
     stealthStillEnabled: false,
     stealthStillDelaySec: 10,
     antiCampEnabled: false,
+    antiCampEliminate: false,
     antiCampLimitSec: 45,
     antiCampRadiusM: 12,
     hotColdEnabled: false,

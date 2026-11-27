@@ -1,4 +1,5 @@
 import React from 'react';
+import { getAvatarEffectDef } from '../lib/cosmetics';
 import { PixelSkull } from './PixelSkull';
 
 interface PlayerAvatarProps {
@@ -7,6 +8,7 @@ interface PlayerAvatarProps {
   size?: 'sm' | 'md' | 'lg';
   name?: string;
   eliminated?: boolean;
+  avatarEffectId?: string;
 }
 
 const SIZE_CLASSES: Record<'sm' | 'md' | 'lg', string> = {
@@ -27,6 +29,7 @@ export const PlayerAvatar: React.FC<PlayerAvatarProps> = ({
   size = 'md',
   name,
   eliminated = false,
+  avatarEffectId,
 }) => {
   if (eliminated) {
     return (
@@ -41,9 +44,13 @@ export const PlayerAvatar: React.FC<PlayerAvatarProps> = ({
     );
   }
 
+  const avatarEffect = getAvatarEffectDef(avatarEffectId);
+
   return (
     <div
-      className={`flex shrink-0 items-center justify-center border-2 bg-slate-50 select-none ${SIZE_CLASSES[size]}`}
+      className={`flex shrink-0 items-center justify-center border-2 bg-slate-50 select-none ${SIZE_CLASSES[size]} ${
+        avatarEffect ? avatarEffect.className : ''
+      }`}
       style={{ borderColor: color }}
       aria-label={name ? `Avatar de ${name}` : 'Avatar de jugador'}
     >

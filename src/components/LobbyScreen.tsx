@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Bot,
   Check,
@@ -18,7 +18,8 @@ import {
   Zap,
 } from 'lucide-react';
 import { startBackgroundKeepAlive } from '../lib/backgroundRunner';
-import { isBotPlayerId } from '../lib/soloSandbox';
+import { getEquippedCosmetics, subscribePreferences } from '../lib/preferences';
+import { isBotPlayerId, subscribeSecretSandbox } from '../lib/soloSandbox';
 import {
   LocationGuardStatus,
   PlayerProfile,
@@ -27,6 +28,7 @@ import {
   RoomRecord,
 } from '../types/game';
 import { PlayerAvatar } from './PlayerAvatar';
+import { PlayerCosmeticName } from './PlayerCosmeticName';
 import { ProfileCustomizer } from './ProfileCustomizer';
 import { RulesSummary } from './RulesSummary';
 
@@ -85,6 +87,22 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
   const [leaving, setLeaving] = useState(false);
   const [menuPlayerId, setMenuPlayerId] = useState<string | null>(null);
   const [actionBusyId, setActionBusyId] = useState<string | null>(null);
+  const [myEquippedCosmetics, setMyEquippedCosmetics] = useState(() =>
+    getEquippedCosmetics()
+  );
+
+  useEffect(() => {
+    const unsubPrefs = subscribePreferences(() => {
+      setMyEquippedCosmetics(getEquippedCosmetics());
+    });
+    const unsubSandbox = subscribeSecretSandbox(() => {
+      setMyEquippedCosmetics(getEquippedCosmetics());
+    });
+    return () => {
+      unsubPrefs();
+      unsubSandbox();
+    };
+  }, []);
 
   const isHost = room.host_id === currentPlayerId;
   const isLocked = Boolean(room.rules?.roomLocked);
@@ -314,6 +332,9 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
               const locStatus = isSelf
                 ? myLocationStatus
                 : peerLocationStatuses[player.id];
+              const pCosmetics = isSelf
+                ? myEquippedCosmetics
+                : room.rules.playerCosmetics?.[player.id];
 
               return (
                 <li key={player.id} className="py-3 space-y-2">
@@ -324,16 +345,21 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                         color={player.color}
                         size="sm"
                         name={player.name}
+                        avatarEffectId={pCosmetics?.avatarEffectId}
                       />
                       <div className="min-w-0">
-                        <p className="truncate text-sm font-semibold text-slate-900">
-                          {player.name}
-                          {isSelf && (
-                            <span className="ml-1.5 text-xs font-medium text-emerald-700">
-                              (Tú)
-                            </span>
-                          )}
-                        </p>
+                        <PlayerCosmeticName
+                          name={player.name}
+                          cosmetics={pCosmetics}
+                          compactTitle
+                          suffix={
+                            isSelf ? (
+                              <span className="text-xs font-medium text-emerald-700">
+                                (Tú)
+                              </span>
+                            ) : undefined
+                          }
+                        />
                         <p className="text-xs text-slate-500">
                           {player.is_host ? 'Anfitrión' : 'Jugador'}
                           {locationGuardEnabled && locStatus === 'disabled' && (

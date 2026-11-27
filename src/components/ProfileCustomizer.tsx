@@ -1,6 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { Check, Palette, Plus, Shuffle } from 'lucide-react';
 import {
+  getEquippedCosmetics,
+  subscribePreferences,
+} from '../lib/preferences';
+import { subscribeSecretSandbox } from '../lib/soloSandbox';
+import {
   extractEmojiGraphemes,
   sanitizeHexColor,
   sanitizePlayerEmoji,
@@ -8,9 +13,11 @@ import {
 import {
   ACCENT_COLORS,
   EMOJI_PALETTE,
+  PlayerCosmetics,
   PlayerProfile,
 } from '../types/game';
 import { PlayerAvatar } from './PlayerAvatar';
+import { PlayerCosmeticName } from './PlayerCosmeticName';
 
 interface ProfileCustomizerProps {
   profile: PlayerProfile;
@@ -44,6 +51,9 @@ export const ProfileCustomizer: React.FC<ProfileCustomizerProps> = ({
   const [hexDraft, setHexDraft] = useState(() =>
     sanitizeHexColor(profile.color)
   );
+  const [equippedCosmetics, setEquippedCosmetics] = useState<PlayerCosmetics>(
+    () => getEquippedCosmetics()
+  );
 
   const safeEmoji = sanitizePlayerEmoji(profile.emoji);
   const safeColor = sanitizeHexColor(profile.color);
@@ -58,6 +68,20 @@ export const ProfileCustomizer: React.FC<ProfileCustomizerProps> = ({
   useEffect(() => {
     setHexDraft(safeColor);
   }, [safeColor]);
+
+  useEffect(() => {
+    setEquippedCosmetics(getEquippedCosmetics());
+    const unsubPrefs = subscribePreferences(() => {
+      setEquippedCosmetics(getEquippedCosmetics());
+    });
+    const unsubSandbox = subscribeSecretSandbox(() => {
+      setEquippedCosmetics(getEquippedCosmetics());
+    });
+    return () => {
+      unsubPrefs();
+      unsubSandbox();
+    };
+  }, []);
 
   const handleCustomEmojiChange = (rawValue: string) => {
     setEmojiDraft(rawValue);
@@ -129,6 +153,7 @@ export const ProfileCustomizer: React.FC<ProfileCustomizerProps> = ({
               color={safeColor}
               size="md"
               name={profile.name || 'Jugador'}
+              avatarEffectId={equippedCosmetics.avatarEffectId}
             />
           </button>
 
@@ -149,6 +174,19 @@ export const ProfileCustomizer: React.FC<ProfileCustomizerProps> = ({
             }`}
           />
         </div>
+
+        {equippedCosmetics.nameEffectId && (
+          <div className="mt-2 flex items-center gap-2 rounded-xl border border-slate-100 bg-slate-50/70 px-3 py-1.5">
+            <span className="text-[11px] font-medium text-slate-500 shrink-0">
+              Color de texto:
+            </span>
+            <PlayerCosmeticName
+              name={profile.name.trim() || 'Jugador'}
+              cosmetics={equippedCosmetics}
+              className="text-xs font-semibold text-slate-900"
+            />
+          </div>
+        )}
 
         {nameError && (
           <p className="mt-1.5 text-xs font-semibold text-rose-600" role="alert">

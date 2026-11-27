@@ -54,8 +54,10 @@ import {
 } from './lib/soloSandbox';
 import {
   applyPreferencesToDocument,
+  getEquippedCosmetics,
   loadPreferences,
   refreshPreferencesFromStorage,
+  subscribePreferences,
   triggerHaptic,
 } from './lib/preferences';
 import { hydrateFromIndexedDbFallback } from './lib/safeStorage';
@@ -83,6 +85,7 @@ import {
   MatchState,
   MatchWinReason,
   MatchWinner,
+  PlayerCosmetics,
   PlayerProfile,
   PlayerRecord,
   PlayerRole,
@@ -272,6 +275,52 @@ export default function App() {
       cancelled = true;
     };
   }, []);
+
+  // Sincronizar cosméticos equipados con la sala activa cuando cambien en Ajustes
+  const lastSyncedCosmeticsRef = useRef<string>('');
+  useEffect(() => {
+    if (!room?.id) return;
+    const activeRoomId = room.id;
+
+    const pushCosmeticsIfNeeded = async () => {
+      const equipped = getEquippedCosmetics();
+      const signature = `${activeRoomId}:${playerId}:${JSON.stringify(equipped)}`;
+      if (lastSyncedCosmeticsRef.current === signature) return;
+      lastSyncedCosmeticsRef.current = signature;
+      try {
+        const latest = await fetchRoomState(activeRoomId);
+        const latestRoom = latest?.room;
+        if (!latestRoom) return;
+        const currentInRoom = latestRoom.rules.playerCosmetics?.[playerId];
+        if (JSON.stringify(currentInRoom ?? {}) === JSON.stringify(equipped)) {
+          return;
+        }
+        const nextRules: RoomRules = {
+          ...latestRoom.rules,
+          playerCosmetics: {
+            ...(latestRoom.rules.playerCosmetics || {}),
+            [playerId]: equipped,
+          },
+        };
+        const updated = await updateRoomRules(activeRoomId, nextRules);
+        setRoom((prev) => (prev && prev.id === activeRoomId ? updated : prev));
+      } catch {
+        // Reintentará en el siguiente cambio o sincronización
+      }
+    };
+
+    void pushCosmeticsIfNeeded();
+    const unsubPrefs = subscribePreferences(() => {
+      void pushCosmeticsIfNeeded();
+    });
+    const unsubSandbox = subscribeSecretSandbox(() => {
+      void pushCosmeticsIfNeeded();
+    });
+    return () => {
+      unsubPrefs();
+      unsubSandbox();
+    };
+  }, [room?.id, playerId]);
 
   // Sonido clic pixelado al interactuar con elementos UI (botones, pestañas, interruptores)
   useEffect(() => {
@@ -735,14 +784,21 @@ export default function App() {
     leavingSelfRef.current = false;
     kickedHandledRef.current = false;
     try {
-      const initialRules = presetRules
+      const equipped = getEquippedCosmetics();
+      const baseRules = presetRules
         ? {
             ...structuredClone(presetRules),
             matchState: null,
             lobbyCountdown: null,
             roomLocked: false,
           }
-        : DEFAULT_RULES;
+        : structuredClone(DEFAULT_RULES);
+      const initialRules: RoomRules = {
+        ...baseRules,
+        playerCosmetics: {
+          [playerId]: equipped,
+        },
+      };
       const { room: createdRoom, player } = await createRoom(
         profile,
         initialRules,
@@ -777,13 +833,38 @@ export default function App() {
     kickedHandledRef.current = false;
     try {
       const result = await joinRoom(code, profile, playerId);
+      const equipped = getEquippedCosmetics();
+      const mergedCosmetics: Record<string, PlayerCosmetics> = {
+        ...(result.room.rules.playerCosmetics || {}),
+        [result.player.id]: equipped,
+      };
+      let joinedRoom = result.room;
+      if (
+        JSON.stringify(result.room.rules.playerCosmetics?.[result.player.id] ?? {}) !==
+        JSON.stringify(equipped)
+      ) {
+        try {
+          joinedRoom = await updateRoomRules(result.room.id, {
+            ...result.room.rules,
+            playerCosmetics: mergedCosmetics,
+          });
+        } catch {
+          joinedRoom = {
+            ...result.room,
+            rules: {
+              ...result.room.rules,
+              playerCosmetics: mergedCosmetics,
+            },
+          };
+        }
+      }
       setCachedPlayerId(result.player.id);
       setPlayerId(result.player.id);
-      setRoom(result.room);
+      setRoom(joinedRoom);
       setPlayers(result.players);
       saveActiveSession({
-        roomId: result.room.id,
-        roomCode: result.room.code,
+        roomId: joinedRoom.id,
+        roomCode: joinedRoom.code,
         playerId: result.player.id,
       });
       if (window.location.search.includes('sala=')) {
@@ -807,7 +888,11 @@ export default function App() {
     if (!room) return;
     setIsSavingRules(true);
     try {
-      const updated = await updateRoomRules(room.id, nextRules);
+      const mergedRules: RoomRules = {
+        ...nextRules,
+        playerCosmetics: room.rules.playerCosmetics,
+      };
+      const updated = await updateRoomRules(room.id, mergedRules);
       setRoom(updated);
       setView('lobby');
     } catch (err) {
@@ -1022,7 +1107,7 @@ export default function App() {
 
   const handleMarkCaught = async (
     targetPlayerId: string,
-    byPlayerId: string | 'storm' | 'anticheat' | 'photo'
+    byPlayerId: string | 'storm' | 'anticheat' | 'photo' | 'camp'
   ) => {
     if (!room) return;
     try {
@@ -1041,7 +1126,8 @@ export default function App() {
       const isHunterCatch =
         byPlayerId !== 'storm' &&
         byPlayerId !== 'anticheat' &&
-        byPlayerId !== 'photo';
+        byPlayerId !== 'photo' &&
+        byPlayerId !== 'camp';
       const isInfectionCatch =
         Boolean(baseRules.modifiers?.infectionModeEnabled) && isHunterCatch;
 
@@ -1090,8 +1176,19 @@ export default function App() {
           (activePlayerIds.size === 0 || activePlayerIds.has(id)) &&
           !nextCaught[id]
       ).length;
+      const remainingSeekers = Object.entries(nextRoles).filter(
+        ([id, role]) =>
+          role === 'seeker' &&
+          (activePlayerIds.size === 0 || activePlayerIds.has(id)) &&
+          !nextCaught[id]
+      ).length;
       const shouldSeekersWin =
         !baseMatch.winner && hadHiders && remainingHiders === 0;
+      const shouldHidersWin =
+        !shouldSeekersWin &&
+        !baseMatch.winner &&
+        remainingHiders > 0 &&
+        remainingSeekers === 0;
 
       const activeHidersList = activePlayers
         .filter(
@@ -1147,6 +1244,12 @@ export default function App() {
           ...(shouldSeekersWin
             ? {
                 winner: 'seekers' as MatchWinner,
+                winReason: 'all_caught' as MatchWinReason,
+                endedAt: nowIso,
+              }
+            : shouldHidersWin
+            ? {
+                winner: 'hiders' as MatchWinner,
                 winReason: 'all_caught' as MatchWinReason,
                 endedAt: nowIso,
               }
@@ -1635,6 +1738,9 @@ export default function App() {
     try {
       const sandboxRules: RoomRules = {
         ...structuredClone(DEFAULT_RULES),
+        playerCosmetics: {
+          [playerId]: getEquippedCosmetics(),
+        },
         roundDuration: 8,
         hideTimeSec: 8,
         stormGraceSec: 25,
