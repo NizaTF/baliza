@@ -1,0 +1,94 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global safety net: deny everything by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function isValidChatMessage(data, roomId) {
+      return data.keys().hasAll([
+          'roomId',
+          'roomCode',
+          'authUid',
+          'senderPlayerId',
+          'senderName',
+          'senderEmoji',
+          'senderRole',
+          'channel',
+          'text',
+          'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'roomId',
+          'roomCode',
+          'authUid',
+          'senderPlayerId',
+          'senderName',
+          'senderEmoji',
+          'senderRole',
+          'channel',
+          'text',
+          'createdAt'
+        ])
+        && data.roomId is string
+        && data.roomId == roomId
+        && isValidId(data.roomId)
+        && data.roomCode is string
+        && data.roomCode.size() >= 2
+        && data.roomCode.size() <= 12
+        && data.roomCode.matches('^[A-Z0-9]+$')
+        && data.authUid is string
+        && data.authUid == request.auth.uid
+        && isValidId(data.authUid)
+        && data.senderPlayerId is string
+        && isValidId(data.senderPlayerId)
+        && data.senderName is string
+        && data.senderName.size() >= 1
+        && data.senderName.size() <= 24
+        && data.senderEmoji is string
+        && data.senderEmoji.size() >= 1
+        && data.senderEmoji.size() <= 16
+        && data.senderRole in ['seeker', 'hider']
+        && data.channel in ['all', 'team']
+        && data.text is string
+        && data.text.size() >= 1
+        && data.text.size() <= 180
+        && data.createdAt == request.time;
+    }
+
+    // Connectivity probe path (read-only check)
+    match /test/connection {
+      allow get: if isSignedIn();
+      allow list, write: if false;
+    }
+
+    // Real-time in-match chat messages scoped by roomId
+    match /rooms/{roomId}/messages/{messageId} {
+      allow get: if isSignedIn() && isValidId(roomId) && isValidId(messageId);
+      allow list: if isSignedIn() && resource.data.roomId == roomId;
+      allow create: if isVerifiedUser()
+        && isValidId(roomId)
+        && isValidId(messageId)
+        && isValidChatMessage(incoming(), roomId);
+      allow update, delete: if false;
+    }
+  }
+}

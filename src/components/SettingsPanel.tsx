@@ -1,5 +1,6 @@
-import React, { useEffect, useState } from 'react';
-import { Coffee, ExternalLink, Volume2, X } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Award, Coffee, ExternalLink, Volume2, X } from 'lucide-react';
+import { AchievementsModal } from './AchievementsModal';
 import {
   APP_AUTHOR,
   APP_VERSION,
@@ -16,10 +17,16 @@ import {
 import {
   playMusicPreviewSample,
   playPixelUiClick,
+  playSecretUnlockChime,
   unlockRetroAudio,
 } from '../lib/retroAudio';
+import {
+  isSecretSandboxUnlocked,
+  setSecretSandboxUnlocked,
+} from '../lib/soloSandbox';
 import { PlayerProfile } from '../types/game';
 import { ProfileCustomizer } from './ProfileCustomizer';
+import { ShareAppButton } from './ShareAppButton';
 
 interface SettingsPanelProps {
   onClose?: () => void;
@@ -27,6 +34,7 @@ interface SettingsPanelProps {
   profile?: PlayerProfile;
   onProfileChange?: (next: PlayerProfile) => void;
   isInRoom?: boolean;
+  onOpenAchievements?: () => void;
 }
 
 const THEME_OPTIONS: Array<{ id: AppTheme; label: string }> = [
@@ -77,10 +85,34 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   profile,
   onProfileChange,
   isInRoom = false,
+  onOpenAchievements,
 }) => {
   const [prefs, setPrefs] = useState<AppPreferences>(() => loadPreferences());
+  const [localAchievementsOpen, setLocalAchievementsOpen] = useState(false);
+  const secretTapRef = useRef<{ count: number; lastMs: number }>({
+    count: 0,
+    lastMs: 0,
+  });
 
   useEffect(() => subscribePreferences(setPrefs), []);
+
+  const handleVersionTap = () => {
+    const now = Date.now();
+    if (now - secretTapRef.current.lastMs > 2000) {
+      secretTapRef.current.count = 0;
+    }
+    secretTapRef.current.count += 1;
+    secretTapRef.current.lastMs = now;
+    if (secretTapRef.current.count >= 5) {
+      secretTapRef.current.count = 0;
+      const next = !isSecretSandboxUnlocked();
+      setSecretSandboxUnlocked(next);
+      if (next) {
+        unlockRetroAudio();
+        playSecretUnlockChime();
+      }
+    }
+  };
 
   const updatePrefs = (patch: Partial<AppPreferences>) => {
     const next = savePreferences({ ...prefs, ...patch });
@@ -353,7 +385,10 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
         <section className="py-5 space-y-3">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <p className="text-sm font-semibold text-slate-900">
+              <p
+                onClick={handleVersionTap}
+                className="text-sm font-semibold text-slate-900 select-none cursor-default"
+              >
                 Baliza · v{APP_VERSION}
               </p>
               <p className="text-xs text-slate-500">
@@ -361,19 +396,39 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
               </p>
             </div>
 
-            <a
-              href={BUY_ME_A_COFFEE_URL}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl bg-[#FFDD00] px-4 py-2 text-sm font-bold text-slate-950 shadow-xs transition-transform hover:brightness-95 active:scale-[0.99]"
-            >
-              <Coffee className="h-4 w-4 shrink-0" aria-hidden="true" />
-              <span>Invítame a un café · Buy Me a Coffee</span>
-              <ExternalLink className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden="true" />
-            </a>
+            <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+              <button
+                type="button"
+                onClick={() => {
+                  if (onOpenAchievements) {
+                    onOpenAchievements();
+                  } else {
+                    setLocalAchievementsOpen(true);
+                  }
+                }}
+                className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50"
+              >
+                <Award className="h-4 w-4 text-amber-600" aria-hidden="true" />
+                <span>Logros</span>
+              </button>
+              <ShareAppButton variant="settings" />
+              <a
+                href={BUY_ME_A_COFFEE_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl bg-[#FFDD00] px-4 py-2 text-sm font-bold text-slate-950 shadow-xs transition-transform hover:brightness-95 active:scale-[0.99]"
+              >
+                <Coffee className="h-4 w-4 shrink-0" aria-hidden="true" />
+                <span>Invítame a un café · Buy Me a Coffee</span>
+                <ExternalLink className="h-3.5 w-3.5 shrink-0 opacity-70" aria-hidden="true" />
+              </a>
+            </div>
           </div>
         </section>
       </div>
+      {localAchievementsOpen && (
+        <AchievementsModal onClose={() => setLocalAchievementsOpen(false)} />
+      )}
     </div>
   );
 

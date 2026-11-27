@@ -20,9 +20,10 @@ export const RulesSummary: React.FC<RulesSummaryProps> = ({ rules }) => {
   const activeModesList = (() => {
     const m = rules.modifiers;
     const labels: string[] = [];
-    if (m?.classicModeEnabled) labels.push('🎮 Clásico');
     if (m?.infectionModeEnabled) labels.push('🧟 Infección');
-    if (rules.timeVictoryEnabled ?? true) labels.push('⏳ Tiempo');
+    else labels.push('💀 Clásico');
+    if (m?.contractHuntEnabled) labels.push('🎯 Contratos');
+    if (m?.abilitiesEnabled ?? true) labels.push('🪄 Habilidades');
     if (rules.beaconVictoryEnabled ?? true) labels.push('🚩 Baliza');
     if (m?.hunterPhotoEnabled) labels.push('📸 Foto');
     if (m?.fogEnabled) labels.push('🌫️ Niebla');
@@ -32,20 +33,20 @@ export const RulesSummary: React.FC<RulesSummaryProps> = ({ rules }) => {
     if (m?.antiCampEnabled) labels.push('🚨 Anti-camper');
     if (m?.hotColdEnabled) labels.push('🌡️ Frío/Caliente');
     if (m?.panicEndgameEnabled) labels.push('⚡ Recta final');
-    if (m?.testJoystickEnabled ?? true) labels.push('🕹️ Joystick');
+    if (m?.testJoystickEnabled ?? true) labels.push('🕹️ Mando virtual');
     return labels;
   })();
 
   return (
     <dl className="divide-y divide-slate-100 text-sm">
-      <div className="flex items-center justify-between gap-3 py-2.5">
+      <div className="flex items-center justify-between gap-3 py-2">
         <dt className="text-slate-500">Duración</dt>
         <dd className="font-semibold tabular-nums text-slate-900">
           {rules.roundDuration} min
         </dd>
       </div>
 
-      <div className="flex items-center justify-between gap-3 py-2.5">
+      <div className="flex items-center justify-between gap-3 py-2">
         <dt className="text-slate-500">Buscadores</dt>
         <dd className="font-semibold tabular-nums text-slate-900">
           {formatSeekers(rules.seekersCount)} ·{' '}
@@ -53,26 +54,24 @@ export const RulesSummary: React.FC<RulesSummaryProps> = ({ rules }) => {
         </dd>
       </div>
 
-      <div className="flex items-center justify-between gap-3 py-2.5">
+      <div className="flex items-center justify-between gap-3 py-2">
         <dt className="text-slate-500">Escondite inicial</dt>
         <dd className="font-semibold tabular-nums text-slate-900">
           {formatDurationSec(rules.hideTimeSec ?? 30)}
         </dd>
       </div>
 
-      <div className="flex items-center justify-between gap-3 py-2.5">
+      <div className="flex items-center justify-between gap-3 py-2">
         <dt className="text-slate-500">Zonas de tormenta</dt>
         <dd className="font-semibold tabular-nums text-slate-900">
           {zonesConfig.zones.length} ({formatDurationSec(totalStormSec)})
         </dd>
       </div>
 
-      <div className="pt-3">
-        <dt className="text-xs font-medium text-slate-500">Modos activos</dt>
-        <dd className="mt-1 text-xs sm:text-sm font-medium text-slate-800 leading-relaxed">
-          {activeModesList.length > 0
-            ? activeModesList.join(' · ')
-            : 'Ninguno'}
+      <div className="pt-2.5">
+        <dt className="text-xs font-medium text-slate-500">Reglas activas</dt>
+        <dd className="mt-1 text-xs font-medium text-slate-800 leading-relaxed">
+          {activeModesList.join(' · ')}
         </dd>
       </div>
     </dl>

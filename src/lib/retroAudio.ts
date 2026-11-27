@@ -1054,6 +1054,179 @@ export function playElimination8BitTheme(): RetroPlaybackHandle {
 }
 
 /**
+ * Sintonía 8-bit estilo Danganronpa de INFECCIÓN (misma familia arcade que eliminación,
+ * en Fa# menor / Frigio con barrido mutante y cadencia ascendente de cambio de bando a Cazador).
+ */
+export function playInfection8BitTheme(): RetroPlaybackHandle {
+  const scale = getAudioScale('music');
+  const ctx = getAudioContext();
+  if (!ctx || scale <= 0) {
+    return { stop: () => {}, wasBlocked: !ctx };
+  }
+
+  let stopped = false;
+  const nodes: AudioNode[] = [];
+
+  if (ctx.state === 'suspended') {
+    void ctx.resume().catch(() => {});
+  }
+
+  const wasBlocked = ctx.state === 'suspended';
+
+  const master = ctx.createGain();
+  master.gain.value = 0.21 * scale;
+  master.connect(ctx.destination);
+  nodes.push(master);
+
+  const now = ctx.currentTime + 0.04;
+
+  const scheduleTone = (
+    freq: number,
+    startOffset: number,
+    duration: number,
+    type: OscillatorType,
+    volume: number,
+    endFreq?: number
+  ) => {
+    if (stopped) return;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = type;
+    const t0 = now + startOffset;
+    const t1 = t0 + duration;
+
+    osc.frequency.setValueAtTime(freq, t0);
+    if (endFreq !== undefined) {
+      osc.frequency.exponentialRampToValueAtTime(Math.max(25, endFreq), t1);
+    }
+
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.linearRampToValueAtTime(volume, t0 + 0.01);
+    gain.gain.setValueAtTime(volume * 0.85, Math.max(t0 + 0.014, t1 - 0.025));
+    gain.gain.exponentialRampToValueAtTime(0.0001, t1);
+
+    osc.connect(gain);
+    gain.connect(master);
+
+    osc.start(t0);
+    osc.stop(t1 + 0.02);
+
+    nodes.push(osc, gain);
+  };
+
+  const scheduleNoise = (
+    startOffset: number,
+    duration: number,
+    volume: number,
+    highpassHz = 1100
+  ) => {
+    if (stopped) return;
+    const src = ctx.createBufferSource();
+    src.buffer = createNoiseBuffer(ctx, duration);
+
+    const filter = ctx.createBiquadFilter();
+    filter.type = 'highpass';
+    filter.frequency.value = highpassHz;
+
+    const gain = ctx.createGain();
+    const t0 = now + startOffset;
+    const t1 = t0 + duration;
+
+    gain.gain.setValueAtTime(volume, t0);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t1);
+
+    src.connect(filter);
+    filter.connect(gain);
+    gain.connect(master);
+
+    src.start(t0);
+    src.stop(t1 + 0.01);
+
+    nodes.push(src, filter, gain);
+  };
+
+  // FASE 1 (0.00s - 0.50s): Alarma biohazard ascendente con intervalos tensos en Fa# menor
+  const bioAlarm: Array<[number, number, number | undefined]> = [
+    [554.37, 0.0, undefined],
+    [739.99, 0.075, undefined],
+    [587.33, 0.15, undefined],
+    [830.61, 0.225, undefined],
+    [622.25, 0.3, undefined],
+    [932.33, 0.375, 987.77],
+  ];
+  bioAlarm.forEach(([f, t, ef]) => {
+    scheduleTone(f, t, 0.068, 'sawtooth', 0.24, ef);
+    scheduleTone(f / 2, t, 0.068, 'triangle', 0.28);
+  });
+  scheduleNoise(0.0, 0.11, 0.16, 1800);
+
+  // FASE 2 (0.50s - 1.74s): Arpegio cromático de contagio y mutación
+  const mutationScan: Array<[number, number, number, number?]> = [
+    [369.99, 0.5, 0.14],
+    [440.0, 0.65, 0.14],
+    [415.3, 0.8, 0.14],
+    [493.88, 0.95, 0.14],
+    [554.37, 1.1, 0.14],
+    [587.33, 1.25, 0.14],
+    [659.25, 1.4, 0.14, 698.46],
+    [739.99, 1.56, 0.16, 880.0],
+  ];
+
+  mutationScan.forEach(([freq, t, d, endF]) => {
+    scheduleTone(freq, t, d, 'square', 0.25, endF);
+    scheduleTone(freq / 2, t, d * 0.9, 'triangle', 0.34);
+  });
+
+  [0.5, 0.8, 1.1, 1.4].forEach((t) => {
+    scheduleNoise(t + 0.13, 0.05, 0.14, 2200);
+  });
+
+  // FASE 3 (1.78s - 2.28s): Impacto de mutación y cambio de bando
+  scheduleTone(440.0, 1.78, 0.16, 'sawtooth', 0.3, 1479.98);
+  scheduleTone(369.99, 1.88, 0.36, 'triangle', 0.38, 92.5);
+  scheduleNoise(1.78, 0.25, 0.28, 850);
+
+  // FASE 4 (2.34s - 3.85s): Cadencia 8-bit de "NUEVO CAZADOR" (ascendente en Fa# menor / quinta justa)
+  const hunterAwakening: Array<[number, number, number, number?]> = [
+    [293.66, 2.34, 0.18],
+    [329.63, 2.54, 0.18],
+    [369.99, 2.74, 0.2],
+    [440.0, 2.96, 0.22],
+    [554.37, 3.2, 0.2],
+    [739.99, 3.42, 0.52, 739.99 * 1.02],
+  ];
+
+  hunterAwakening.forEach(([freq, t, d, ef], idx) => {
+    const isFinal = idx === hunterAwakening.length - 1;
+    scheduleTone(freq, t, d, 'square', isFinal ? 0.28 : 0.24, ef);
+    scheduleTone(freq / 2, t, d, 'triangle', 0.38);
+    if (isFinal) {
+      scheduleTone(freq * 1.498, t + 0.02, d * 0.9, 'sawtooth', 0.15);
+    }
+  });
+  scheduleNoise(3.42, 0.1, 0.15, 1900);
+
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    try {
+      master.gain.setValueAtTime(0.0001, ctx.currentTime);
+    } catch {
+      // Ignorar si ya cerró
+    }
+    nodes.forEach((n) => {
+      try {
+        n.disconnect();
+      } catch {
+        // Ignorar
+      }
+    });
+  };
+
+  return { stop, wasBlocked };
+}
+
+/**
  * Señal luminosa sonora cuando la Baliza de Extracción se desbloquea para los fugitivos.
  */
 export function playBeaconUnlockAlert(): void {
@@ -1280,6 +1453,19 @@ export function playMatchResultTheme(didIWin: boolean): RetroPlaybackHandle {
   master.gain.value = (didIWin ? 0.36 : 0.34) * getAudioScale('music');
   master.connect(compressor);
 
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    window.clearTimeout(timerId);
+    try {
+      master.gain.setValueAtTime(0.0001, ctx.currentTime);
+      master.disconnect();
+      compressor.disconnect();
+    } catch {
+      // Ignorar
+    }
+  };
+
   const playSnareClap = (time: number, vol = 0.24) => {
     // Cuerpo tonal
     const osc = ctx.createOscillator();
@@ -1423,9 +1609,17 @@ export function playMatchResultTheme(didIWin: boolean): RetroPlaybackHandle {
 
     let stepIndex = 0;
     let nextTime = ctx.currentTime + 0.03;
+    let finishScheduled = false;
+    const maxLoops = 2;
+    const maxSteps = 64 * maxLoops;
 
     const scheduleStep = (time: number, idx: number) => {
       const s = idx % 64;
+      const isFinalBar = idx >= maxSteps - 4;
+
+      if (isFinalBar) {
+        return;
+      }
 
       if (s % 4 === 0 || (s >= 60 && s % 2 === 0)) {
         playPunchyKick(ctx, master, time, 0.54);
@@ -1460,12 +1654,26 @@ export function playMatchResultTheme(didIWin: boolean): RetroPlaybackHandle {
     };
 
     const pump = () => {
-      if (stopped) return;
-      master.gain.setValueAtTime(0.36 * getAudioScale('music'), ctx.currentTime);
-      while (nextTime < ctx.currentTime + 0.14) {
+      if (stopped || finishScheduled) return;
+      const targetVol = 0.36 * getAudioScale('music');
+      master.gain.setValueAtTime(Math.max(0.0001, targetVol), ctx.currentTime);
+      while (stepIndex < maxSteps && nextTime < ctx.currentTime + 0.14) {
         scheduleStep(nextTime, stepIndex);
         nextTime += stepSec;
         stepIndex++;
+      }
+      if (stepIndex >= maxSteps) {
+        finishScheduled = true;
+        const fadeStart = Math.max(ctx.currentTime + 0.04, nextTime + 0.1);
+        const fadeEnd = fadeStart + 0.55;
+        master.gain.cancelScheduledValues(ctx.currentTime);
+        master.gain.setValueAtTime(Math.max(0.0001, targetVol), fadeStart);
+        master.gain.exponentialRampToValueAtTime(0.0001, fadeEnd);
+        timerId = window.setTimeout(
+          stop,
+          Math.max(80, Math.ceil((fadeEnd - ctx.currentTime) * 1000) + 80)
+        );
+        return;
       }
       timerId = window.setTimeout(pump, 28);
     };
@@ -1508,6 +1716,9 @@ export function playMatchResultTheme(didIWin: boolean): RetroPlaybackHandle {
 
     let stepIndex = 0;
     let nextTime = ctx.currentTime + 0.03;
+    let finishScheduled = false;
+    const maxLoops = 2;
+    const maxSteps = 32 * maxLoops;
 
     const scheduleStep = (time: number, idx: number) => {
       const s = idx % 32;
@@ -1544,30 +1755,31 @@ export function playMatchResultTheme(didIWin: boolean): RetroPlaybackHandle {
     };
 
     const pump = () => {
-      if (stopped) return;
-      master.gain.setValueAtTime(0.34 * getAudioScale('music'), ctx.currentTime);
-      while (nextTime < ctx.currentTime + 0.14) {
+      if (stopped || finishScheduled) return;
+      const targetVol = 0.34 * getAudioScale('music');
+      master.gain.setValueAtTime(Math.max(0.0001, targetVol), ctx.currentTime);
+      while (stepIndex < maxSteps && nextTime < ctx.currentTime + 0.14) {
         scheduleStep(nextTime, stepIndex);
         nextTime += stepSec;
         stepIndex++;
+      }
+      if (stepIndex >= maxSteps) {
+        finishScheduled = true;
+        const fadeStart = Math.max(ctx.currentTime + 0.04, nextTime + 0.08);
+        const fadeEnd = fadeStart + 0.5;
+        master.gain.cancelScheduledValues(ctx.currentTime);
+        master.gain.setValueAtTime(Math.max(0.0001, targetVol), fadeStart);
+        master.gain.exponentialRampToValueAtTime(0.0001, fadeEnd);
+        timerId = window.setTimeout(
+          stop,
+          Math.max(80, Math.ceil((fadeEnd - ctx.currentTime) * 1000) + 80)
+        );
+        return;
       }
       timerId = window.setTimeout(pump, 28);
     };
     pump();
   }
-
-  const stop = () => {
-    if (stopped) return;
-    stopped = true;
-    window.clearTimeout(timerId);
-    try {
-      master.gain.setValueAtTime(0.0001, ctx.currentTime);
-      master.disconnect();
-      compressor.disconnect();
-    } catch {
-      // Ignorar
-    }
-  };
 
   return { stop, wasBlocked };
 }
@@ -1720,6 +1932,83 @@ export function playInfectionAlert(isSelfInfected = false): void {
 
     osc.connect(filter);
     filter.connect(gain);
+    gain.connect(master);
+    osc.start(t0);
+    osc.stop(t1 + 0.02);
+  });
+}
+
+/**
+ * Alerta corta global para la sala cuando un jugador es infectado y cambia de bando.
+ */
+export function playGlobalInfectionAlert(): void {
+  const scale = getAudioScale('sfx');
+  if (scale <= 0) return;
+
+  const ctx = getAudioContext();
+  if (!ctx) return;
+  if (ctx.state === 'suspended') {
+    void ctx.resume().catch(() => {});
+  }
+
+  const now = ctx.currentTime + 0.01;
+  const master = ctx.createGain();
+  master.gain.value = 0.24 * scale;
+  master.connect(ctx.destination);
+
+  playPunchyKick(ctx, master, now, 0.5);
+
+  const notes: Array<[number, number, number]> = [
+    [369.99, 0.0, 0.09],
+    [554.37, 0.09, 0.09],
+    [739.99, 0.18, 0.22],
+  ];
+  notes.forEach(([freq, offset, dur]) => {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    const t0 = now + offset;
+    const t1 = t0 + dur;
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(freq, t0);
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.linearRampToValueAtTime(0.32, t0 + 0.008);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t1);
+    osc.connect(gain);
+    gain.connect(master);
+    osc.start(t0);
+    osc.stop(t1 + 0.02);
+  });
+}
+
+/**
+ * Sintonía secreta 8-bit al desbloquear el modo Sandbox Solo.
+ */
+export function playSecretUnlockChime(): void {
+  const scale = getAudioScale('sfx');
+  if (scale <= 0) return;
+
+  const ctx = getAudioContext();
+  if (!ctx) return;
+  if (ctx.state === 'suspended') {
+    void ctx.resume().catch(() => {});
+  }
+
+  const now = ctx.currentTime + 0.01;
+  const master = ctx.createGain();
+  master.gain.value = 0.24 * scale;
+  master.connect(ctx.destination);
+
+  [523.25, 659.25, 783.99, 1046.5, 1318.5].forEach((freq, idx) => {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    const t0 = now + idx * 0.055;
+    const t1 = t0 + (idx === 4 ? 0.34 : 0.1);
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(freq, t0);
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.linearRampToValueAtTime(0.28, t0 + 0.006);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t1);
+    osc.connect(gain);
     gain.connect(master);
     osc.start(t0);
     osc.stop(t1 + 0.02);

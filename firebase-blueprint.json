@@ -1,0 +1,108 @@
+{
+  "entities": {
+    "ChatMessage": {
+      "title": "ChatMessage",
+      "description": "Mensaje corto de chat en tiempo real enviado durante una partida de Baliza.",
+      "type": "object",
+      "properties": {
+        "roomId": {
+          "type": "string",
+          "description": "ID de la sala de Baliza a la que pertenece el mensaje.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "roomCode": {
+          "type": "string",
+          "description": "Código corto de la sala.",
+          "minLength": 2,
+          "maxLength": 12,
+          "pattern": "^[A-Z0-9]+$"
+        },
+        "authUid": {
+          "type": "string",
+          "description": "UID de Firebase Auth del usuario que envía el mensaje.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "senderPlayerId": {
+          "type": "string",
+          "description": "ID de jugador dentro de la partida de Baliza.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "senderName": {
+          "type": "string",
+          "description": "Nombre visible del jugador.",
+          "minLength": 1,
+          "maxLength": 24
+        },
+        "senderEmoji": {
+          "type": "string",
+          "description": "Emoji del avatar del jugador.",
+          "minLength": 1,
+          "maxLength": 16
+        },
+        "senderRole": {
+          "type": "string",
+          "description": "Bando del jugador al enviar el mensaje.",
+          "enum": ["seeker", "hider"]
+        },
+        "channel": {
+          "type": "string",
+          "description": "Canal del mensaje (global o solo equipo).",
+          "enum": ["all", "team"]
+        },
+        "text": {
+          "type": "string",
+          "description": "Texto corto del mensaje en partida.",
+          "minLength": 1,
+          "maxLength": 180
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp del servidor de Firestore."
+        }
+      },
+      "required": [
+        "roomId",
+        "roomCode",
+        "authUid",
+        "senderPlayerId",
+        "senderName",
+        "senderEmoji",
+        "senderRole",
+        "channel",
+        "text",
+        "createdAt"
+      ]
+    },
+    "ConnectionCheck": {
+      "title": "ConnectionCheck",
+      "description": "Documento de comprobación de conectividad de Firestore.",
+      "type": "object",
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        }
+      }
+    }
+  },
+  "firestore": {
+    "/rooms/{roomId}/messages/{messageId}": {
+      "schema": {
+        "$ref": "#/entities/ChatMessage"
+      },
+      "description": "Mensajes de chat en tiempo real asociados a una sala de partida."
+    },
+    "/test/connection": {
+      "schema": {
+        "$ref": "#/entities/ConnectionCheck"
+      },
+      "description": "Ruta de validación inicial de conexión con Firestore."
+    }
+  }
+}

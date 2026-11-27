@@ -73,6 +73,15 @@ export interface PlayerRecapRoute {
   totalMeters: number;
 }
 
+export interface DecoyRecord {
+  id: string;
+  ownerPlayerId: string;
+  label: string;
+  lat: number;
+  lng: number;
+  expiresAt: string;
+}
+
 export interface MatchState {
   active: boolean;
   startedAt: string;
@@ -80,8 +89,14 @@ export interface MatchState {
   activeZones: StormZonePhase[];
   caught?: Record<string, CaughtRecord>;
   infected?: Record<string, InfectedRecord>;
+  contractTargets?: Record<string, string>;
+  contractsCompletedBy?: Record<string, number>;
+  activeDecoys?: DecoyRecord[];
+  activeCloaks?: Record<string, string>;
+  abilityUses?: Record<string, number>;
   rouletteDurationMs?: number;
   seekerOrder?: string[];
+  initialSeekers?: string[];
   hideTimeSec?: number;
   extractionBeacon?: ExtractionBeacon | null;
   photoChallenge?: PhotoChallengeState | null;
@@ -126,6 +141,9 @@ export interface RoomModifiers {
   panicWindowSec?: number;
   panicPingIntervalSec?: number;
   infectionModeEnabled?: boolean;
+  contractHuntEnabled?: boolean;
+  abilitiesEnabled?: boolean;
+  abilitiesPerPlayer?: number;
   testJoystickEnabled?: boolean;
   testJoystickDefaultSpeed?: 'walk' | 'run' | 'fast';
 }
@@ -300,6 +318,9 @@ export const DEFAULT_RULES: RoomRules = {
     panicWindowSec: 60,
     panicPingIntervalSec: 15,
     infectionModeEnabled: false,
+    contractHuntEnabled: false,
+    abilitiesEnabled: true,
+    abilitiesPerPlayer: 2,
     testJoystickEnabled: true,
     testJoystickDefaultSpeed: 'run',
   },

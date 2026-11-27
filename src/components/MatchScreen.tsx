@@ -11,22 +11,28 @@ import {
   Crown,
   Eye,
   Flag,
+  FlaskConical,
   Gamepad2,
   History,
   LocateFixed,
   LogOut,
   Map as MapIcon,
   MapPinOff,
+  MessageSquare,
   Minus,
+  Navigation,
   Plus,
   Radio,
   RotateCcw,
   Settings,
   Shield,
+  SlidersHorizontal,
   Target,
   Trophy,
   UserCheck,
   Users,
+  Volume2,
+  VolumeX,
   X,
 } from 'lucide-react';
 import {
@@ -54,6 +60,7 @@ import {
   playBeaconUnlockAlert,
   playEndgameCountdownTick,
   playGlobalEliminationAlert,
+  playGlobalInfectionAlert,
   playHuntStartSting,
   playInfectionAlert,
   playLocationTamperAlarm,
@@ -67,12 +74,15 @@ import {
 import {
   LocationGuardStatus,
   MatchPathPoint,
+  MatchState,
   MatchWinReason,
   MatchWinner,
   PlayerLocationPayload,
   PlayerRecapRoute,
   PlayerRecord,
+  PlayerRole,
   RoomRecord,
+  RoomRules,
 } from '../types/game';
 import {
   APP_AUTHOR,
@@ -80,9 +90,39 @@ import {
   getMapTileSpec,
   loadPreferences,
   subscribePreferences,
+  triggerHaptic,
 } from '../lib/preferences';
+import { recordAbilityUsed } from '../lib/achievements';
+import {
+  computeBearingDeg,
+  getCardinalLabel,
+  getPocketPulseSpec,
+  normalizeRelativeAngleDeg,
+  speakPocketCue,
+} from '../lib/compassHaptics';
+import {
+  FeatureTestSuiteReport,
+  runAllBalizaFeatureTests,
+} from '../lib/featureTests';
+import { sendRoomChatMessage } from '../lib/firebase';
+import {
+  createGpsFilterState,
+  filterGpsSample,
+  GpsFilterState,
+} from '../lib/gpsFilter';
 import { safeSessionGet, safeSessionSet } from '../lib/safeStorage';
+import {
+  BotMotionVector,
+  findBotAutoCapture,
+  isBotPlayerId,
+  pickBotAbilityAction,
+  pickBotChatMessage,
+  setSecretSandboxUnlocked,
+  stepBotVectors,
+} from '../lib/soloSandbox';
 import { EliminationOverlay } from './EliminationOverlay';
+import { InfectionOverlay } from './InfectionOverlay';
+import { MatchChatDrawer } from './MatchChatDrawer';
 import { MatchResultOverlay } from './MatchResultOverlay';
 import { getPixelSkullSvgHtml, PixelSkull } from './PixelSkull';
 import { PlayerAvatar } from './PlayerAvatar';
@@ -116,8 +156,17 @@ interface MatchScreenProps {
     winReason: MatchWinReason,
     beaconActivatorId?: string
   ) => Promise<boolean>;
+  onActivateAbility?: (
+    kind: 'decoy' | 'cloak' | 'sonar' | 'scan',
+    coords?: { lat: number; lng: number },
+    actorPlayerId?: string
+  ) => Promise<boolean>;
   onEndMatch: () => Promise<void>;
   onLeaveRoom: () => Promise<void>;
+  sandboxUnlocked?: boolean;
+  onSandboxUpdateMatchState?: (
+    updater: (prevMatch: MatchState, baseRules: RoomRules) => MatchState
+  ) => Promise<void>;
 }
 
 type MatchTab = 'map' | 'players' | 'storm' | 'match';
@@ -177,8 +226,11 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
   onSetPhotoChallengeStatus,
   onEliminatePhotoTimeouts,
   onDeclareWinner,
+  onActivateAbility,
   onEndMatch,
   onLeaveRoom,
+  sandboxUnlocked = false,
+  onSandboxUpdateMatchState,
 }) => {
   const match = room.rules.matchState;
   const isHost = room.host_id === currentPlayerId;
@@ -229,6 +281,10 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
   const panicWindowSec = mods?.panicWindowSec ?? 60;
   const panicPingIntervalSec = mods?.panicPingIntervalSec ?? 15;
   const infectionModeEnabled = Boolean(mods?.infectionModeEnabled);
+  const contractHuntEnabled = Boolean(mods?.contractHuntEnabled);
+  const abilitiesEnabled = mods?.abilitiesEnabled ?? true;
+  const abilitiesMax = Math.max(1, mods?.abilitiesPerPlayer ?? 2);
+  const chatAllowed = !(mods?.noChat ?? false);
   const allowTestJoystick = mods?.testJoystickEnabled ?? true;
   const testJoystickDefaultSpeed = mods?.testJoystickDefaultSpeed ?? 'run';
 
@@ -240,6 +296,7 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
     accuracy: number;
   } | null>(null);
   const [gpsError, setGpsError] = useState<string | null>(null);
+  const [gpsRejectedJumps, setGpsRejectedJumps] = useState(0);
   const [joystickActive, setJoystickActive] = useState(false);
   const [joystickFollowMap, setJoystickFollowMap] = useState(true);
   const [otherLocations, setOtherLocations] = useState<
@@ -267,9 +324,25 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
   const [busyAction, setBusyAction] = useState(false);
   const [captureToast, setCaptureToast] = useState<string | null>(null);
   const [showEliminationOverlay, setShowEliminationOverlay] = useState(false);
+  const [showInfectionOverlay, setShowInfectionOverlay] = useState(false);
+  const [showSandboxModal, setShowSandboxModal] = useState(false);
+  const [sandboxBotsMoving, setSandboxBotsMoving] = useState(true);
+  const [sandboxBotsAutoPlay, setSandboxBotsAutoPlay] = useState(true);
+  const [sandboxTestReport, setSandboxTestReport] =
+    useState<FeatureTestSuiteReport | null>(null);
+  const [sandboxTestingBusy, setSandboxTestingBusy] = useState(false);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [showEventsModal, setShowEventsModal] = useState(false);
   const [seenEventsCount, setSeenEventsCount] = useState(0);
+  const [showChatDrawer, setShowChatDrawer] = useState(false);
+  const [showMapTools, setShowMapTools] = useState(false);
+  const [unreadChatCount, setUnreadChatCount] = useState(0);
+  const [pocketCompassOn, setPocketCompassOn] = useState(false);
+  const [pocketVoiceOn, setPocketVoiceOn] = useState(false);
+  const [deviceHeadingDeg, setDeviceHeadingDeg] = useState<number | null>(null);
+  const [abilityBusy, setAbilityBusy] = useState(false);
+  const [abilityToast, setAbilityToast] = useState<string | null>(null);
+  const [quickScanUntilMs, setQuickScanUntilMs] = useState(0);
   const [resultDismissed, setResultDismissed] = useState(false);
   const [resultWaitDone, setResultWaitDone] = useState(true);
   const [bgKeepAliveOn, setBgKeepAliveOn] = useState(() =>
@@ -278,6 +351,8 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
   const [notifPerm, setNotifPerm] = useState(() =>
     getNotificationPermissionStatus()
   );
+  const gpsFilterRef = useRef<GpsFilterState>(createGpsFilterState());
+  const lastPocketVoiceAtRef = useRef<number>(0);
 
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
@@ -348,6 +423,22 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
     new Set(Object.keys(infectedMap))
   );
   const shownEliminationKeysRef = useRef<Set<string>>(new Set());
+  const shownInfectionKeysRef = useRef<Set<string>>(new Set());
+  const botVectorsRef = useRef<Record<string, BotMotionVector>>({});
+  const botStartAtMsRef = useRef<number>(Date.now());
+  const lastNearAnchorAtRef = useRef<number>(0);
+  const lastBotCaptureAtRef = useRef<number>(0);
+  const rolesRef = useRef(match?.roles || {});
+  const playersRef = useRef(players);
+  const abilityUsesRef = useRef(match?.abilityUses || {});
+  const activeCloaksRef = useRef(match?.activeCloaks || {});
+  const activeDecoysRef = useRef(match?.activeDecoys || []);
+  const extractionBeaconRef = useRef(extractionBeacon);
+  const isHuntPhaseRef = useRef(false);
+  const matchWinnerRef = useRef(matchWinner);
+  const otherLocationsRef = useRef(otherLocations);
+  const isMyStealthStillRef = useRef(false);
+  const isMyCloakActiveRef = useRef(false);
   const startSignalPlayedRef = useRef(false);
   const hiderHideThemePlayedRef = useRef(false);
   const prevPhaseRef = useRef<'roulette' | 'hiding' | 'hunting' | null>(null);
@@ -364,6 +455,14 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
   fogConfigRef.current = { enabled: fogEnabled, radiusM: fogRadiusM };
   radarRangeRef.current = radarRangeM;
   joystickActiveRef.current = joystickActive;
+  rolesRef.current = match?.roles || {};
+  playersRef.current = players;
+  abilityUsesRef.current = match?.abilityUses || {};
+  activeCloaksRef.current = match?.activeCloaks || {};
+  activeDecoysRef.current = match?.activeDecoys || [];
+  extractionBeaconRef.current = extractionBeacon;
+  matchWinnerRef.current = matchWinner;
+  otherLocationsRef.current = otherLocations;
 
   const recapStorageKey = `baliza_recap_${room.id}_${match?.startedAt ?? ''}`;
   if (recapLoadedKeyRef.current !== recapStorageKey) {
@@ -475,7 +574,27 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
     }
   }, [caughtMap, players, currentPlayerId]);
 
-  // Detectar nuevas infecciones y avisar a toda la sala (sin pantalla de eliminación)
+  const myInfectedAt = myInfectedRecord?.at ?? null;
+
+  // Mostrar animación pixel-art propia de INFECCIÓN cuando el jugador actual cambia de bando
+  useEffect(() => {
+    if (!myInfectedAt) {
+      setShowInfectionOverlay(false);
+      return;
+    }
+    const seenKey = `baliza_inf_seen_${room.id}_${currentPlayerId}_${myInfectedAt}`;
+    if (
+      shownInfectionKeysRef.current.has(seenKey) ||
+      safeSessionGet(seenKey) === '1'
+    ) {
+      return;
+    }
+    shownInfectionKeysRef.current.add(seenKey);
+    safeSessionSet(seenKey, '1');
+    setShowInfectionOverlay(true);
+  }, [myInfectedAt, room.id, currentPlayerId]);
+
+  // Detectar nuevas infecciones y avisar a toda la sala
   useEffect(() => {
     const currentKeys = Object.keys(infectedMap);
     const newlyInfected = currentKeys.filter(
@@ -494,11 +613,15 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
 
       setCaptureToast(
         selfInfected
-          ? '🧟 ¡Te han infectado! Ahora eres Buscador.'
+          ? '🧟 ¡Te han infectado! Ahora pasas a pillar como Buscador.'
           : `🧟 ${hunterName} infectó a ${targetName}. ¡Ahora es buscador!`
       );
 
-      playInfectionAlert(selfInfected);
+      if (!selfInfected) {
+        playGlobalInfectionAlert();
+      } else if (!myInfectedAt) {
+        playInfectionAlert(true);
+      }
 
       if (selfInfected && document.visibilityState === 'hidden') {
         void sendBackgroundNotification(
@@ -513,9 +636,30 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
       }, 6500);
       return () => window.clearTimeout(timeout);
     }
-  }, [infectedMap, players, currentPlayerId]);
+  }, [infectedMap, players, currentPlayerId, myInfectedAt]);
 
-  // Seguimiento GPS propio + recuperación inmediata al encender la pantalla tras segundo plano
+  const applyFilteredGpsFix = (
+    lat: number,
+    lng: number,
+    accuracy: number,
+    timestampMs: number
+  ) => {
+    const res = filterGpsSample(gpsFilterRef.current, {
+      lat,
+      lng,
+      accuracy,
+      timestampMs,
+    });
+    gpsFilterRef.current = res.state;
+    setGpsRejectedJumps(res.state.rejectedJumps);
+    if (res.position) {
+      setMyPos(res.position);
+      return res.position;
+    }
+    return myPosRef.current;
+  };
+
+  // Seguimiento GPS propio con filtro anti-saltos y suavizado EMA
   useEffect(() => {
     if (!navigator.geolocation) {
       setGpsError('Tu navegador no admite GPS en vivo.');
@@ -530,11 +674,12 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
         }
         return null;
       });
-      setMyPos({
-        lat: pos.coords.latitude,
-        lng: pos.coords.longitude,
-        accuracy: pos.coords.accuracy,
-      });
+      applyFilteredGpsFix(
+        pos.coords.latitude,
+        pos.coords.longitude,
+        pos.coords.accuracy,
+        pos.timestamp || Date.now()
+      );
     };
 
     const onErr = () => {
@@ -1204,7 +1349,7 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
     radarSweepOriginsRef.current = seekerOrigins;
     radarSweepStartMsRef.current = now;
 
-    // Detectar escondidos dentro del alcance del radar (salvo si Sigilo inmóvil está activo y quieto)
+    // Detectar escondidos dentro del alcance del radar (salvo si Sigilo inmóvil o Silencio de Radar están activos)
     const detected: Array<{
       playerId: string;
       name: string;
@@ -1212,9 +1357,15 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
       lng: number;
       atMs: number;
     }> = [];
+    const activeCloaks = match?.activeCloaks || {};
+    const activeDecoys = (match?.activeDecoys || []).filter(
+      (d) => new Date(d.expiresAt).getTime() > syncedNowMs
+    );
     players.forEach((p) => {
       const role = match?.roles?.[p.id] ?? 'hider';
       if (role !== 'hider' || caughtMap[p.id]) return;
+      const cloakUntil = activeCloaks[p.id] ? new Date(activeCloaks[p.id]).getTime() : 0;
+      if (cloakUntil > syncedNowMs) return;
       const loc =
         p.id === currentPlayerId && myPos
           ? { lat: myPos.lat, lng: myPos.lng, updatedAt: now, isStill: isMyStealthStill }
@@ -1232,6 +1383,22 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
           name: p.name,
           lat: loc.lat,
           lng: loc.lng,
+          atMs: now,
+        });
+      }
+    });
+
+    activeDecoys.forEach((decoy) => {
+      const inRange = seekerOrigins.some(
+        (origin) =>
+          distanceMeters(origin.lat, origin.lng, decoy.lat, decoy.lng) <= radarRangeM
+      );
+      if (inRange) {
+        detected.push({
+          playerId: decoy.id,
+          name: decoy.label,
+          lat: decoy.lat,
+          lng: decoy.lng,
           atMs: now,
         });
       }
@@ -1257,6 +1424,9 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
     radarRangeM,
     players,
     match?.roles,
+    match?.activeCloaks,
+    match?.activeDecoys,
+    syncedNowMs,
     currentPlayerId,
     myPos,
     otherLocations,
@@ -1329,9 +1499,12 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
     let bestLoc: { lat: number; lng: number } | null = null;
     let bestRoleLabel = 'Fugitivo';
 
+    const activeCloaks = match?.activeCloaks || {};
     players.forEach((p) => {
       if (p.id === currentPlayerId || caughtMap[p.id]) return;
       const otherRole = match?.roles?.[p.id] ?? 'hider';
+      const cloakUntil = activeCloaks[p.id] ? new Date(activeCloaks[p.id]).getTime() : 0;
+      if (otherRole === 'hider' && cloakUntil > syncedNowMs) return;
       const isIncluded =
         otherRole === 'hider' ||
         (classicHintsIncludeSeeker && otherRole === 'seeker');
@@ -1540,7 +1713,7 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
       const t = new Date(rec.at).getTime();
       return Number.isNaN(t) ? max : Math.max(max, t);
     }, 0);
-    const waitMs = latestInfectedMs > latestCaughtMs ? 1200 : 4250;
+    const waitMs = latestInfectedMs > latestCaughtMs ? 4350 : 4250;
 
     waitDeadlineMsRef.current = Date.now() + waitMs;
     setResultWaitDone(false);
@@ -2056,13 +2229,14 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
     });
   }, [radarBlips, radarEnabled, myRole, fogEnabled, fogRadiusM, myPos]);
 
-  // Dibujar otros jugadores visibles (incluyendo pistas periódicas, infracción GPS, anti-camper, tormenta y filtro de niebla)
+  // Dibujar otros jugadores visibles y señuelos activos
   useEffect(() => {
     const othersGroup = othersLayerRef.current;
     if (!othersGroup) return;
     othersGroup.clearLayers();
 
     const now = Date.now();
+    const activeCloaks = match?.activeCloaks || {};
     const isClassicHintActive = Boolean(
       classicHintsEnabled && isHuntPhase && classicHintRevealUntilMs > now
     );
@@ -2074,6 +2248,9 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
       if (!loc) return;
 
       const otherRole = match?.roles?.[p.id] ?? 'hider';
+      const cloakUntil = activeCloaks[p.id] ? new Date(activeCloaks[p.id]).getTime() : 0;
+      const isCloaked = otherRole === 'hider' && cloakUntil > syncedNowMs;
+
       const isLocOff =
         locationGuardEnabled &&
         (peerLocationStatuses[p.id] === 'disabled' || Boolean(loc.locationDisabled));
@@ -2091,7 +2268,8 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
         (myRole === 'seeker' && otherRole === 'hider' && seekersCanSeeHiders);
       const isCampExposed = Boolean(antiCampEnabled && loc.campExposed);
       const isClassicHintRevealed = Boolean(
-        isClassicHintActive &&
+        !isCloaked &&
+          isClassicHintActive &&
           (otherRole === 'hider' ||
             (classicHintsIncludeSeeker && otherRole === 'seeker'))
       );
@@ -2152,11 +2330,45 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
         interactive: false,
       }).addTo(othersGroup);
     });
+
+    // Señuelos activos desplegados por fugitivos
+    if (isHuntPhase) {
+      const activeDecoys = (match?.activeDecoys || []).filter(
+        (d) => new Date(d.expiresAt).getTime() > syncedNowMs
+      );
+      activeDecoys.forEach((decoy) => {
+        if (fogEnabled && myPos && distanceMeters(myPos.lat, myPos.lng, decoy.lat, decoy.lng) > fogRadiusM) {
+          return;
+        }
+        const isOwner = decoy.ownerPlayerId === currentPlayerId;
+        if (myRole !== 'seeker' && !isOwner) return;
+
+        const decoyColor = isOwner ? '#7C3AED' : '#0284C7';
+        const decoyBadge = isOwner
+          ? '🎭 Señuelo activo'
+          : `🧭 ${escapeHtml(decoy.label)}`;
+        const decoyEmoji = isOwner ? '🎭' : '🏃';
+
+        const icon = L.divIcon({
+          className: 'baliza-decoy-marker',
+          html: `<div style="display:flex;flex-direction:column;align-items:center;transform:translate(-50%,-50%);opacity:${isOwner ? '0.85' : '1'};">
+            <div style="display:flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:9999px;background:#ffffff;border:3px dashed ${decoyColor};box-shadow:0 3px 10px rgba(15,23,42,0.3);font-size:18px;">${decoyEmoji}</div>
+            <span style="margin-top:3px;padding:1px 6px;border-radius:9999px;background:${decoyColor};color:#ffffff;font-size:10px;font-weight:700;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,0.25);">${decoyBadge}</span>
+          </div>`,
+          iconSize: [0, 0],
+          iconAnchor: [0, 0],
+        });
+        L.marker([decoy.lat, decoy.lng], { icon, interactive: false }).addTo(othersGroup);
+      });
+    }
   }, [
     players,
     otherLocations,
     currentPlayerId,
     match?.roles,
+    match?.activeCloaks,
+    match?.activeDecoys,
+    syncedNowMs,
     myRole,
     hidersCanSeeSeekers,
     seekersCanSeeHiders,
@@ -2220,16 +2432,17 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         setGpsError(null);
-        setMyPos({
+        const filtered = applyFilteredGpsFix(
+          pos.coords.latitude,
+          pos.coords.longitude,
+          pos.coords.accuracy,
+          pos.timestamp || Date.now()
+        );
+        const target = filtered ?? {
           lat: pos.coords.latitude,
           lng: pos.coords.longitude,
-          accuracy: pos.coords.accuracy,
-        });
-        mapRef.current?.setView(
-          [pos.coords.latitude, pos.coords.longitude],
-          16,
-          { animate: true }
-        );
+        };
+        mapRef.current?.setView([target.lat, target.lng], 16, { animate: true });
       },
       () => {
         setGpsError('No pudimos obtener tu ubicación GPS.');
@@ -2274,19 +2487,24 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
           setMyPos({ lat: seedLat, lng: seedLng, accuracy: 3 });
         }
         mapRef.current?.setView([seedLat, seedLng], 16, { animate: true });
-      } else if (navigator.geolocation) {
-        navigator.geolocation.getCurrentPosition(
-          (pos) => {
-            setGpsError(null);
-            setMyPos({
-              lat: pos.coords.latitude,
-              lng: pos.coords.longitude,
-              accuracy: pos.coords.accuracy,
-            });
-          },
-          () => {},
-          { enableHighAccuracy: true, timeout: 6000 }
-        );
+      } else {
+        gpsFilterRef.current = createGpsFilterState();
+        setGpsRejectedJumps(0);
+        if (navigator.geolocation) {
+          navigator.geolocation.getCurrentPosition(
+            (pos) => {
+              setGpsError(null);
+              applyFilteredGpsFix(
+                pos.coords.latitude,
+                pos.coords.longitude,
+                pos.coords.accuracy,
+                pos.timestamp || Date.now()
+              );
+            },
+            () => {},
+            { enableHighAccuracy: true, timeout: 6000 }
+          );
+        }
       }
       return next;
     });
@@ -2631,6 +2849,14 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
     return `PILLADO POR ${hunterName.toUpperCase()}`;
   }, [myCaughtRecord, players]);
 
+  const infectionCauseLabel = useMemo(() => {
+    if (!myInfectedRecord) return '';
+    const hunterName =
+      players.find((p) => p.id === myInfectedRecord.byPlayerId)?.name ||
+      'BUSCADOR';
+    return `INFECTADO POR ${hunterName.toUpperCase()}`;
+  }, [myInfectedRecord, players]);
+
   const handleCloseEliminationOverlay = () => {
     if (myCaughtRecord) {
       const seenKey = `baliza_elim_seen_${room.id}_${currentPlayerId}_${myCaughtRecord.at}`;
@@ -2639,6 +2865,763 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
     }
     setShowEliminationOverlay(false);
   };
+
+  const handleCloseInfectionOverlay = () => {
+    if (myInfectedRecord) {
+      const seenKey = `baliza_inf_seen_${room.id}_${currentPlayerId}_${myInfectedRecord.at}`;
+      shownInfectionKeysRef.current.add(seenKey);
+      safeSessionSet(seenKey, '1');
+    }
+    setShowInfectionOverlay(false);
+  };
+
+  // Simulación local de bots en el mapa (solo activa en Modo Test Secreto sin DB)
+  const botPlayerIds = useMemo(
+    () => players.filter((p) => isBotPlayerId(p.id)).map((p) => p.id),
+    [players]
+  );
+
+  isHuntPhaseRef.current = isHuntPhase;
+
+  useEffect(() => {
+    if (!sandboxUnlocked || botPlayerIds.length === 0) return;
+
+    // Si estamos en escritorio sin GPS real, inicializar posición virtual en el centro de la zona
+    if (!myPosRef.current) {
+      const seedLat = activeZones[0]?.lat ?? VALENCIA_CENTER.lat;
+      const seedLng = activeZones[0]?.lng ?? VALENCIA_CENTER.lng;
+      setGpsError(null);
+      setMyPos({ lat: seedLat, lng: seedLng, accuracy: 3 });
+      setJoystickActive(true);
+    }
+
+    const tickBots = (nearAnchor = false) => {
+      const activeBotIds = botPlayerIds.filter((id) => !caughtMapRef.current[id]);
+      if (activeBotIds.length === 0) return;
+
+      const anchor = myPosRef.current ?? {
+        lat: snapshot.currentLat,
+        lng: snapshot.currentLng,
+      };
+      const syncedNow = Date.now() + clockOffsetRef.current;
+      const { nextVectors, payloads } = stepBotVectors(
+        activeBotIds,
+        botVectorsRef.current,
+        anchor,
+        { lat: snapshot.currentLat, lng: snapshot.currentLng },
+        snapshot.currentRadius,
+        1.1,
+        nearAnchor,
+        {
+          roles: rolesRef.current,
+          caughtMap: caughtMapRef.current,
+          activeCloaks: activeCloaksRef.current,
+          activeDecoys: activeDecoysRef.current,
+          humanPos: myPosRef.current
+            ? {
+                id: currentPlayerId,
+                lat: myPosRef.current.lat,
+                lng: myPosRef.current.lng,
+                isStill: isMyStealthStillRef.current,
+                cloakActive: isMyCloakActiveRef.current,
+              }
+            : null,
+          extractionBeacon: extractionBeaconRef.current,
+          isHuntPhase: isHuntPhaseRef.current,
+          nowMs: syncedNow,
+        }
+      );
+      botVectorsRef.current = nextVectors;
+
+      const mergedLocations: Record<string, PlayerLocationPayload> = {
+        ...otherLocationsRef.current,
+      };
+      payloads.forEach((pl) => {
+        mergedLocations[pl.playerId] = pl;
+      });
+      setOtherLocations(mergedLocations);
+
+      if (canRecordRecapRef.current) {
+        const tSec =
+          (Date.now() + clockOffsetRef.current - recapAnchorMsRef.current) / 1000;
+        payloads.forEach((pl) => {
+          recordRecapPoint(pl.playerId, pl.lat, pl.lng, tSec);
+        });
+      }
+
+      if (trailEnabled) {
+        const cutoff = Date.now() - trailDurationSec * 1000;
+        let updatedTrail = false;
+        payloads.forEach((pl) => {
+          const list = trailHistoryRef.current[pl.playerId] || [];
+          const last = list[list.length - 1];
+          if (!last || distanceMeters(last.lat, last.lng, pl.lat, pl.lng) >= 4) {
+            trailHistoryRef.current[pl.playerId] = [
+              ...list.filter((pt) => pt.at >= cutoff),
+              { lat: pl.lat, lng: pl.lng, at: Date.now() },
+            ].slice(-90);
+            updatedTrail = true;
+          }
+        });
+        if (updatedTrail) setTrailVersion((v) => v + 1);
+      }
+
+      // Captura / infección automática por parte de bots buscadores
+      const realNow = Date.now();
+      if (
+        sandboxBotsAutoPlay &&
+        isHuntPhaseRef.current &&
+        !matchWinnerRef.current &&
+        realNow - botStartAtMsRef.current > 3500 &&
+        realNow - lastNearAnchorAtRef.current > 3000 &&
+        realNow - lastBotCaptureAtRef.current > 4500
+      ) {
+        const autoHit = findBotAutoCapture({
+          players: playersRef.current,
+          roles: rolesRef.current,
+          caughtMap: caughtMapRef.current,
+          locations: mergedLocations,
+          humanPlayer: myPosRef.current
+            ? {
+                id: currentPlayerId,
+                lat: myPosRef.current.lat,
+                lng: myPosRef.current.lng,
+              }
+            : null,
+          captureRadiusM: 16,
+        });
+        if (autoHit) {
+          lastBotCaptureAtRef.current = realNow;
+          void onMarkCaught(autoHit.targetId, autoHit.seekerBotId);
+          if (chatAllowed) {
+            const msgPick = pickBotChatMessage({
+              players: playersRef.current,
+              roles: rolesRef.current,
+              caughtMap: caughtMapRef.current,
+              infectedMap: infectedMapRef.current,
+              eventHint: 'catch',
+              actorBotId: autoHit.seekerBotId,
+              forceAllChannel: true,
+            });
+            if (msgPick) {
+              void sendRoomChatMessage({
+                roomId: room.id,
+                roomCode: room.code,
+                senderPlayerId: msgPick.bot.id,
+                senderName: msgPick.bot.name,
+                senderEmoji: msgPick.bot.emoji,
+                senderRole: msgPick.role,
+                channel: msgPick.channel,
+                text: msgPick.text,
+                forceLocal: true,
+              });
+            }
+          }
+        }
+      }
+    };
+
+    tickBots(Object.keys(botVectorsRef.current).length === 0);
+    if (!sandboxBotsMoving || matchWinner) return;
+
+    const timer = window.setInterval(() => {
+      tickBots(false);
+    }, 1100);
+    return () => window.clearInterval(timer);
+  }, [
+    sandboxUnlocked,
+    sandboxBotsMoving,
+    sandboxBotsAutoPlay,
+    botPlayerIds,
+    matchWinner,
+    snapshot.currentLat,
+    snapshot.currentLng,
+    snapshot.currentRadius,
+    trailEnabled,
+    trailDurationSec,
+    currentPlayerId,
+    chatAllowed,
+    room.id,
+    room.code,
+  ]);
+
+  // Chat y habilidades autónomas de los bots durante la partida en Sandbox
+  useEffect(() => {
+    if (
+      !sandboxUnlocked ||
+      !sandboxBotsAutoPlay ||
+      botPlayerIds.length === 0 ||
+      !hasMatchStarted ||
+      isRoulettePhase ||
+      matchWinner
+    ) {
+      return;
+    }
+
+    const chatTimer = window.setInterval(() => {
+      if (!chatAllowed || matchWinnerRef.current) return;
+      const msgPick = pickBotChatMessage({
+        players: playersRef.current,
+        roles: rolesRef.current,
+        caughtMap: caughtMapRef.current,
+        infectedMap: infectedMapRef.current,
+        eventHint: Math.random() < 0.15 && isBeaconUnlocked ? 'beacon' : 'chatter',
+      });
+      if (!msgPick) return;
+      void sendRoomChatMessage({
+        roomId: room.id,
+        roomCode: room.code,
+        senderPlayerId: msgPick.bot.id,
+        senderName: msgPick.bot.name,
+        senderEmoji: msgPick.bot.emoji,
+        senderRole: msgPick.role,
+        channel: msgPick.channel,
+        text: msgPick.text,
+        forceLocal: true,
+      });
+    }, 11000);
+
+    const abilityTimer = window.setInterval(() => {
+      if (
+        !abilitiesEnabled ||
+        !isHuntPhaseRef.current ||
+        matchWinnerRef.current ||
+        !onActivateAbility
+      ) {
+        return;
+      }
+      const pick = pickBotAbilityAction({
+        players: playersRef.current,
+        roles: rolesRef.current,
+        caughtMap: caughtMapRef.current,
+        abilityUses: abilityUsesRef.current,
+        abilitiesMax,
+      });
+      if (!pick) return;
+      const botLoc =
+        botVectorsRef.current[pick.botId] || otherLocationsRef.current[pick.botId];
+      const coords = botLoc
+        ? { lat: botLoc.lat, lng: botLoc.lng }
+        : { lat: snapshot.currentLat, lng: snapshot.currentLng };
+      void onActivateAbility(pick.kind, coords, pick.botId).then((ok) => {
+        if (!ok) return;
+        const label =
+          pick.kind === 'decoy'
+            ? '🎭 soltó un señuelo'
+            : pick.kind === 'cloak'
+            ? '🫥 activó silencio de radar'
+            : pick.kind === 'sonar'
+            ? '📡 lanzó un sonar'
+            : '⚡ activó rastreo rápido';
+        triggerAbilityToast(`${pick.botName} ${label}`);
+        if (chatAllowed && Math.random() < 0.5) {
+          void sendRoomChatMessage({
+            roomId: room.id,
+            roomCode: room.code,
+            senderPlayerId: pick.botId,
+            senderName: pick.botName,
+            senderEmoji:
+              playersRef.current.find((p) => p.id === pick.botId)?.emoji || '🤖',
+            senderRole: pick.role,
+            channel: 'all',
+            text:
+              pick.role === 'seeker'
+                ? '📡 ¡Habilidad de rastreo activada!'
+                : '🎭 ¡Señuelo / sigilo activado!',
+            forceLocal: true,
+          });
+        }
+      });
+    }, 13500);
+
+    return () => {
+      window.clearInterval(chatTimer);
+      window.clearInterval(abilityTimer);
+    };
+  }, [
+    sandboxUnlocked,
+    sandboxBotsAutoPlay,
+    botPlayerIds.length,
+    hasMatchStarted,
+    isRoulettePhase,
+    matchWinner,
+    chatAllowed,
+    abilitiesEnabled,
+    abilitiesMax,
+    isBeaconUnlocked,
+    room.id,
+    room.code,
+    snapshot.currentLat,
+    snapshot.currentLng,
+  ]);
+
+  // Participación automática de los bots en el Reto Foto
+  useEffect(() => {
+    if (
+      !sandboxUnlocked ||
+      !sandboxBotsAutoPlay ||
+      !isPhotoChallengeActive ||
+      !photoChallenge
+    ) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      const botHiders = playersRef.current.filter(
+        (p) =>
+          isBotPlayerId(p.id) &&
+          (rolesRef.current[p.id] ?? 'hider') === 'hider' &&
+          !caughtMapRef.current[p.id]
+      );
+      botHiders.forEach((b, idx) => {
+        if (!photoChallenge.completedBy?.[b.id]) {
+          sendPhotoProofRef.current?.({
+            challengeId: photoChallenge.id,
+            playerId: b.id,
+            playerName: b.name,
+            dataUrl: '',
+            at: new Date().toISOString(),
+          });
+          if (idx === 0) {
+            void onSetPhotoChallengeStatus(photoChallenge.id, b.id, 'accepted');
+          }
+        }
+      });
+    }, 3200);
+    return () => window.clearTimeout(timer);
+  }, [
+    sandboxUnlocked,
+    sandboxBotsAutoPlay,
+    isPhotoChallengeActive,
+    photoChallenge?.id,
+  ]);
+
+  const handleBringBotsNearMe = () => {
+    const activeBotIds = botPlayerIds.filter((id) => !caughtMap[id]);
+    if (activeBotIds.length === 0) return;
+    lastNearAnchorAtRef.current = Date.now();
+    const anchor = myPos ?? { lat: snapshot.currentLat, lng: snapshot.currentLng };
+    const { nextVectors, payloads } = stepBotVectors(
+      activeBotIds,
+      botVectorsRef.current,
+      anchor,
+      { lat: snapshot.currentLat, lng: snapshot.currentLng },
+      snapshot.currentRadius,
+      1.0,
+      true
+    );
+    botVectorsRef.current = nextVectors;
+    setOtherLocations((prev) => {
+      const next = { ...prev };
+      payloads.forEach((pl) => {
+        next[pl.playerId] = pl;
+      });
+      return next;
+    });
+  };
+
+  const handleSandboxForceBotChat = async () => {
+    const pick = pickBotChatMessage({
+      players,
+      roles: match?.roles || {},
+      caughtMap,
+      infectedMap,
+      forceAllChannel: true,
+    });
+    if (!pick) return;
+    await sendRoomChatMessage({
+      roomId: room.id,
+      roomCode: room.code,
+      senderPlayerId: pick.bot.id,
+      senderName: pick.bot.name,
+      senderEmoji: pick.bot.emoji,
+      senderRole: pick.role,
+      channel: 'all',
+      text: pick.text,
+      forceLocal: true,
+    });
+    triggerAbilityToast(`💬 ${pick.bot.name}: "${pick.text}"`);
+  };
+
+  const handleSandboxForceBotAbility = async () => {
+    if (!onActivateAbility) return;
+    const pick = pickBotAbilityAction({
+      players,
+      roles: match?.roles || {},
+      caughtMap,
+      abilityUses: match?.abilityUses || {},
+      abilitiesMax: Math.max(abilitiesMax, 99),
+    });
+    if (!pick) return;
+    const botLoc =
+      botVectorsRef.current[pick.botId] || otherLocations[pick.botId];
+    const coords = botLoc
+      ? { lat: botLoc.lat, lng: botLoc.lng }
+      : myPos ?? { lat: snapshot.currentLat, lng: snapshot.currentLng };
+    const ok = await onActivateAbility(pick.kind, coords, pick.botId);
+    if (ok) {
+      triggerAbilityToast(`🤖 ${pick.botName} usó ${pick.kind.toUpperCase()}`);
+    }
+  };
+
+  const handleSandboxRunFeatureTests = async () => {
+    setSandboxTestingBusy(true);
+    try {
+      const report = await runAllBalizaFeatureTests();
+      setSandboxTestReport(report);
+    } finally {
+      setSandboxTestingBusy(false);
+    }
+  };
+
+  // Caza por Objetivos (Contratos)
+  const myContractTargetId =
+    contractHuntEnabled && myRole === 'seeker'
+      ? match?.contractTargets?.[currentPlayerId] ?? null
+      : null;
+  const myContractPlayer = myContractTargetId
+    ? players.find((p) => p.id === myContractTargetId) ?? null
+    : null;
+  const myContractsCompleted = match?.contractsCompletedBy?.[currentPlayerId] ?? 0;
+
+  // Señuelos y Habilidades activas
+  const myAbilityUses = match?.abilityUses?.[currentPlayerId] ?? 0;
+  const abilitiesRemaining = Math.max(0, abilitiesMax - myAbilityUses);
+  const myCloakUntilMs = match?.activeCloaks?.[currentPlayerId]
+    ? new Date(match.activeCloaks[currentPlayerId]).getTime()
+    : 0;
+  const isMyCloakActive = myCloakUntilMs > syncedNowMs;
+  isMyStealthStillRef.current = isMyStealthStill;
+  isMyCloakActiveRef.current = isMyCloakActive;
+  const myCloakRemainingSec = Math.max(
+    0,
+    Math.ceil((myCloakUntilMs - syncedNowMs) / 1000)
+  );
+  const isQuickScanActive = quickScanUntilMs > syncedNowMs;
+
+  const triggerAbilityToast = (msg: string) => {
+    setAbilityToast(msg);
+    window.setTimeout(() => {
+      setAbilityToast((cur) => (cur === msg ? null : cur));
+    }, 3600);
+  };
+
+  const handleUseAbility = async (
+    kind: 'decoy' | 'cloak' | 'sonar' | 'scan'
+  ) => {
+    if (abilityBusy || !abilitiesEnabled || abilitiesRemaining <= 0) return;
+    if ((kind === 'decoy' || kind === 'sonar') && !myPos) {
+      triggerAbilityToast('Esperando señal GPS para activar habilidad.');
+      return;
+    }
+    setAbilityBusy(true);
+    try {
+      const ok = onActivateAbility
+        ? await onActivateAbility(
+            kind,
+            myPos ? { lat: myPos.lat, lng: myPos.lng } : undefined
+          )
+        : true;
+      if (!ok) return;
+      recordAbilityUsed();
+      triggerHaptic([24, 30, 24]);
+
+      if (kind === 'decoy') {
+        triggerAbilityToast('🎭 Señuelo desplegado (25 s).');
+      } else if (kind === 'cloak') {
+        triggerAbilityToast('🫥 Silencio de radar activo (20 s).');
+      } else if (kind === 'sonar') {
+        if (myPos) {
+          const now = Date.now();
+          const range = Math.max(250, radarRangeM);
+          const cloaks = match?.activeCloaks || {};
+          const found: Array<{
+            playerId: string;
+            name: string;
+            lat: number;
+            lng: number;
+            atMs: number;
+          }> = [];
+          players.forEach((p) => {
+            if ((match?.roles?.[p.id] ?? 'hider') !== 'hider' || caughtMap[p.id]) {
+              return;
+            }
+            const cloakUntil = cloaks[p.id] ? new Date(cloaks[p.id]).getTime() : 0;
+            if (cloakUntil > syncedNowMs) return;
+            const loc = otherLocations[p.id];
+            if (!loc || now - loc.updatedAt > 40000) return;
+            if (distanceMeters(myPos.lat, myPos.lng, loc.lat, loc.lng) <= range) {
+              found.push({
+                playerId: p.id,
+                name: p.name,
+                lat: loc.lat,
+                lng: loc.lng,
+                atMs: now,
+              });
+            }
+          });
+          (match?.activeDecoys || [])
+            .filter((d) => new Date(d.expiresAt).getTime() > syncedNowMs)
+            .forEach((d) => {
+              if (distanceMeters(myPos.lat, myPos.lng, d.lat, d.lng) <= range) {
+                found.push({
+                  playerId: d.id,
+                  name: d.label,
+                  lat: d.lat,
+                  lng: d.lng,
+                  atMs: now,
+                });
+              }
+            });
+          radarSweepOriginsRef.current = [{ lat: myPos.lat, lng: myPos.lng }];
+          radarSweepStartMsRef.current = now;
+          setRadarBlips(found);
+          playRadarSweepPing(found.length);
+          triggerAbilityToast(
+            found.length > 0
+              ? `📡 Sonar detectó ${found.length} señal(es) en ${range}m.`
+              : `📡 Sonar sin señales en ${range}m.`
+          );
+        }
+      } else if (kind === 'scan') {
+        setQuickScanUntilMs(syncedNowMs + 7000);
+        playRadarSweepPing(1);
+        triggerAbilityToast('⚡ Rastreo rápido activo (7 s).');
+      }
+    } finally {
+      setAbilityBusy(false);
+    }
+  };
+
+  // Orientación del móvil para Brújula táctica y Modo Bolsillo
+  useEffect(() => {
+    if (!pocketCompassOn) {
+      setDeviceHeadingDeg(null);
+      return;
+    }
+    const handleOrientation = (ev: DeviceOrientationEvent) => {
+      const webkitHeading = (ev as DeviceOrientationEvent & {
+        webkitCompassHeading?: number;
+      }).webkitCompassHeading;
+      if (typeof webkitHeading === 'number' && !Number.isNaN(webkitHeading)) {
+        setDeviceHeadingDeg(webkitHeading);
+        return;
+      }
+      if (typeof ev.alpha === 'number' && !Number.isNaN(ev.alpha)) {
+        setDeviceHeadingDeg((360 - ev.alpha) % 360);
+      }
+    };
+    window.addEventListener('deviceorientationabsolute', handleOrientation as EventListener);
+    window.addEventListener('deviceorientation', handleOrientation);
+    return () => {
+      window.removeEventListener('deviceorientationabsolute', handleOrientation as EventListener);
+      window.removeEventListener('deviceorientation', handleOrientation);
+    };
+  }, [pocketCompassOn]);
+
+  const handleTogglePocketCompass = async () => {
+    const next = !pocketCompassOn;
+    if (next) {
+      const DOE = window.DeviceOrientationEvent as unknown as {
+        requestPermission?: () => Promise<'granted' | 'denied'>;
+      };
+      if (DOE && typeof DOE.requestPermission === 'function') {
+        try {
+          await DOE.requestPermission();
+        } catch {
+          // Seguir usando cálculo relativo al norte si deniega giroscopio
+        }
+      }
+    }
+    setPocketCompassOn(next);
+  };
+
+  const pocketCompassTarget = useMemo(() => {
+    if (!myPos) return null;
+    const now = Date.now();
+    if (myRole === 'hider') {
+      if (isInStorm) {
+        const exitPt = getClosestSafePoint(
+          snapshot.currentLat,
+          snapshot.currentLng,
+          snapshot.currentRadius,
+          myPos.lat,
+          myPos.lng
+        );
+        return { label: 'Salida de tormenta', lat: exitPt.lat, lng: exitPt.lng };
+      }
+      if (extractionBeacon && isHuntPhase) {
+        return {
+          label: isBeaconUnlocked ? 'Baliza activa' : 'Baliza verde',
+          lat: extractionBeacon.lat,
+          lng: extractionBeacon.lng,
+        };
+      }
+      return {
+        label: 'Centro seguro',
+        lat: snapshot.currentLat,
+        lng: snapshot.currentLng,
+      };
+    }
+
+    // Buscador: prioriza Contrato si hay posición visible/rastreo, si no blip de radar o fugitivo expuesto
+    const cloaks = match?.activeCloaks || {};
+    if (myContractPlayer && !caughtMap[myContractPlayer.id]) {
+      const cloakUntil = cloaks[myContractPlayer.id]
+        ? new Date(cloaks[myContractPlayer.id]).getTime()
+        : 0;
+      const loc = otherLocations[myContractPlayer.id];
+      const isVisible =
+        loc &&
+        now - loc.updatedAt <= 40000 &&
+        cloakUntil <= syncedNowMs &&
+        (isQuickScanActive ||
+          seekersCanSeeHiders ||
+          loc.stormExposed ||
+          loc.campExposed ||
+          (classicHintsEnabled && classicHintRevealUntilMs > now));
+      if (isVisible && loc) {
+        return {
+          label: `🎯 ${myContractPlayer.name}`,
+          lat: loc.lat,
+          lng: loc.lng,
+        };
+      }
+    }
+
+    if (radarBlips.length > 0) {
+      let bestBlip = radarBlips[0];
+      let bestDist = Infinity;
+      radarBlips.forEach((b) => {
+        const d = distanceMeters(myPos.lat, myPos.lng, b.lat, b.lng);
+        if (d < bestDist) {
+          bestDist = d;
+          bestBlip = b;
+        }
+      });
+      return { label: `📡 ${bestBlip.name}`, lat: bestBlip.lat, lng: bestBlip.lng };
+    }
+
+    if (isQuickScanActive || seekersCanSeeHiders) {
+      let bestP: { name: string; lat: number; lng: number } | null = null;
+      let bestDist = Infinity;
+      players.forEach((p) => {
+        if ((match?.roles?.[p.id] ?? 'hider') !== 'hider' || caughtMap[p.id]) return;
+        const cloakUntil = cloaks[p.id] ? new Date(cloaks[p.id]).getTime() : 0;
+        if (cloakUntil > syncedNowMs) return;
+        const loc = otherLocations[p.id];
+        if (!loc || now - loc.updatedAt > 40000) return;
+        const d = distanceMeters(myPos.lat, myPos.lng, loc.lat, loc.lng);
+        if (d < bestDist) {
+          bestDist = d;
+          bestP = { name: p.name, lat: loc.lat, lng: loc.lng };
+        }
+      });
+      if (bestP) return bestP;
+    }
+
+    if (extractionBeacon && isBeaconUnlocked) {
+      return {
+        label: 'Vigilar Baliza',
+        lat: extractionBeacon.lat,
+        lng: extractionBeacon.lng,
+      };
+    }
+
+    return {
+      label: 'Centro de zona',
+      lat: snapshot.currentLat,
+      lng: snapshot.currentLng,
+    };
+  }, [
+    myPos,
+    myRole,
+    isInStorm,
+    snapshot.currentLat,
+    snapshot.currentLng,
+    snapshot.currentRadius,
+    extractionBeacon,
+    isHuntPhase,
+    isBeaconUnlocked,
+    match?.activeCloaks,
+    match?.roles,
+    myContractPlayer,
+    caughtMap,
+    otherLocations,
+    syncedNowMs,
+    isQuickScanActive,
+    seekersCanSeeHiders,
+    classicHintsEnabled,
+    classicHintRevealUntilMs,
+    radarBlips,
+    players,
+  ]);
+
+  const pocketGuidance = useMemo(() => {
+    if (!myPos || !pocketCompassTarget) return null;
+    const distM = Math.round(
+      distanceMeters(
+        myPos.lat,
+        myPos.lng,
+        pocketCompassTarget.lat,
+        pocketCompassTarget.lng
+      )
+    );
+    const bearingDeg = computeBearingDeg(
+      myPos.lat,
+      myPos.lng,
+      pocketCompassTarget.lat,
+      pocketCompassTarget.lng
+    );
+    const relDeg = normalizeRelativeAngleDeg(bearingDeg, deviceHeadingDeg);
+    const isAligned =
+      deviceHeadingDeg !== null ? Math.abs(relDeg) <= 28 : true;
+    const pulse = getPocketPulseSpec(distM, isAligned);
+    return {
+      label: pocketCompassTarget.label,
+      distM,
+      bearingDeg,
+      cardinal: getCardinalLabel(bearingDeg),
+      relDeg,
+      isAligned,
+      pulse,
+    };
+  }, [myPos, pocketCompassTarget, deviceHeadingDeg]);
+
+  const pocketGuidanceRef = useRef(pocketGuidance);
+  pocketGuidanceRef.current = pocketGuidance;
+  const pocketVoiceRef = useRef(pocketVoiceOn);
+  pocketVoiceRef.current = pocketVoiceOn;
+
+  // Cadencia háptica y voz opcional en Modo Bolsillo
+  useEffect(() => {
+    if (!pocketCompassOn || matchWinner || myCaughtRecord) return;
+    let timerId = 0;
+    let cancelled = false;
+
+    const tickPulse = () => {
+      if (cancelled) return;
+      const g = pocketGuidanceRef.current;
+      let nextDelay = 3000;
+      if (g) {
+        triggerHaptic(g.pulse.pattern);
+        nextDelay = g.pulse.intervalMs;
+        if (
+          pocketVoiceRef.current &&
+          Date.now() - lastPocketVoiceAtRef.current >= 12000
+        ) {
+          lastPocketVoiceAtRef.current = Date.now();
+          speakPocketCue(`${g.label} a ${g.distM} metros, rumbo ${g.cardinal}`);
+        }
+      }
+      timerId = window.setTimeout(tickPulse, nextDelay);
+    };
+
+    timerId = window.setTimeout(tickPulse, 500);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timerId);
+    };
+  }, [pocketCompassOn, matchWinner, myCaughtRecord]);
 
   return (
     <div className="fixed inset-0 z-30 flex h-[100dvh] w-full flex-col overflow-hidden bg-slate-100">
@@ -2649,107 +3632,84 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
         aria-label="Mapa en vivo de la partida"
       />
 
-      {/* Cabecera flotante limpia */}
-      <header className="pointer-events-none relative z-20 px-3 pt-3 sm:px-5 sm:pt-4">
-        <div className="pointer-events-auto mx-auto max-w-3xl space-y-2">
-          <div className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white/95 px-3.5 py-2.5 shadow-sm backdrop-blur-md">
-            {/* Rol actual */}
-            <div className="flex min-w-0 items-center gap-2.5">
+      {/* Cabecera flotante mínima (prioridad total al mapa) */}
+      <header className="pointer-events-none relative z-20 px-2.5 pt-2.5 sm:px-5 sm:pt-3.5">
+        <div className="pointer-events-auto mx-auto max-w-2xl space-y-1.5">
+          {/* Barra superior compacta de 1 sola línea */}
+          <div className="flex items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white/95 px-2.5 py-1.5 shadow-sm backdrop-blur-md">
+            {/* Rol + libres */}
+            <div className="flex min-w-0 items-center gap-2">
               <div
-                className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${
+                className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg ${
                   myCaughtRecord
                     ? 'bg-slate-900 text-white'
+                    : myInfectedRecord
+                    ? 'bg-emerald-600 text-white'
                     : myRole === 'seeker'
                     ? 'bg-rose-50 text-rose-600'
                     : 'bg-emerald-50 text-emerald-600'
                 }`}
               >
                 {myCaughtRecord ? (
-                  <PixelSkull className="h-5 w-5" />
+                  <PixelSkull className="h-4 w-4" />
                 ) : myRole === 'seeker' ? (
-                  <Eye className="h-4 w-4" aria-hidden="true" />
+                  <Eye className="h-3.5 w-3.5" aria-hidden="true" />
                 ) : (
-                  <Shield className="h-4 w-4" aria-hidden="true" />
+                  <Shield className="h-3.5 w-3.5" aria-hidden="true" />
                 )}
               </div>
-              <div className="min-w-0">
-                <p className="text-[11px] font-medium text-slate-500">
-                  {myCaughtRecord
-                    ? 'Eliminado'
-                    : myInfectedRecord
-                    ? `Infectado · Sala ${room.code}`
-                    : `Sala ${room.code}`}
-                </p>
-                <h1 className="font-display truncate text-sm sm:text-base font-bold leading-tight text-slate-900">
+              <div className="min-w-0 flex items-baseline gap-1.5">
+                <h1 className="font-display truncate text-xs sm:text-sm font-bold text-slate-900">
                   {myCaughtRecord
                     ? 'Espectador'
+                    : myInfectedRecord
+                    ? 'Infectado'
                     : myRole === 'seeker'
                     ? 'Buscador'
                     : 'Fugitivo'}
                 </h1>
+                <span className="font-mono text-[11px] font-medium text-slate-500 tabular-nums shrink-0">
+                  · {hiderStats.activeHiders}/{hiderStats.totalHiders}
+                </span>
               </div>
             </div>
 
-            {/* Datos en vivo */}
-            <div className="flex items-center gap-4 text-right">
-              <div className="hidden sm:block">
-                <p className="text-[11px] font-medium text-slate-500">
-                  Fugitivos
-                </p>
-                <p className="font-mono text-sm font-semibold tabular-nums text-slate-900">
-                  {hiderStats.activeHiders}/{hiderStats.totalHiders}
-                </p>
-              </div>
+            {/* Reloj, Zona y Eventos */}
+            <div className="flex items-center gap-2.5 sm:gap-3 shrink-0">
               {isHuntPhase && timeVictoryEnabled && (
-                <div>
-                  <p
-                    className={`text-[11px] font-medium ${
-                      roundRemainingSec <= 30 && !matchWinner
-                        ? 'text-rose-600'
-                        : 'text-emerald-700'
-                    }`}
-                  >
-                    {myRole === 'hider' ? 'Ganas en' : 'Tiempo'}
-                  </p>
-                  <p
-                    className={`font-mono text-xs sm:text-sm font-semibold tabular-nums ${
-                      roundRemainingSec <= 30 && !matchWinner
-                        ? 'text-rose-600 animate-pulse'
-                        : 'text-slate-900'
-                    }`}
-                  >
-                    {formatDurationSec(roundRemainingSec)}
-                  </p>
-                </div>
+                <span
+                  className={`font-mono text-xs sm:text-sm font-bold tabular-nums ${
+                    roundRemainingSec <= 30 && !matchWinner
+                      ? 'text-rose-600 animate-pulse'
+                      : 'text-slate-900'
+                  }`}
+                  title={myRole === 'hider' ? 'Tiempo para ganar' : 'Tiempo restante'}
+                >
+                  {formatDurationSec(roundRemainingSec)}
+                </span>
               )}
-              <div>
-                <p className="text-[11px] font-medium text-violet-700">
-                  {isHidePhase
-                    ? 'Esconderse'
-                    : snapshot.stage === 'waiting'
-                    ? `Zona ${snapshot.phaseIndex + 1}`
-                    : snapshot.stage === 'shrinking'
-                    ? `Cierre Z${snapshot.phaseIndex + 2}`
-                    : 'Zona final'}
-                </p>
-                <p className="font-mono text-xs sm:text-sm font-semibold tabular-nums text-slate-900">
-                  {isHidePhase
-                    ? `${Math.ceil(hideRemainingSec)} s`
-                    : snapshot.stage === 'final'
-                    ? formatRadius(snapshot.currentRadius)
-                    : `${formatDurationSec(snapshot.remainingSec)} · ${formatRadius(
-                        snapshot.currentRadius
-                      )}`}
-                </p>
-              </div>
+
+              <span className="font-mono text-[11px] sm:text-xs font-semibold tabular-nums text-violet-700">
+                {isHidePhase
+                  ? `Escondite ${Math.ceil(hideRemainingSec)}s`
+                  : snapshot.stage === 'final'
+                  ? `Final · ${formatRadius(snapshot.currentRadius)}`
+                  : `Z${snapshot.phaseIndex + 1} · ${formatDurationSec(
+                      snapshot.remainingSec
+                    )} · ${formatRadius(snapshot.currentRadius)}`}
+              </span>
+
               <button
                 type="button"
-                onClick={() => setShowEventsModal(true)}
+                onClick={() => {
+                  setShowMapTools(false);
+                  setShowEventsModal(true);
+                }}
                 aria-label={`Ver historial de eventos (${matchEvents.length})`}
                 title="Historial de eventos"
-                className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 transition-colors"
+                className="relative flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 transition-colors"
               >
-                <History className="h-4 w-4" aria-hidden="true" />
+                <History className="h-3.5 w-3.5" aria-hidden="true" />
                 {unreadEventsCount > 0 && (
                   <span className="absolute -top-1 -right-1 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-rose-600 px-1 font-mono text-[10px] font-bold text-white">
                     {unreadEventsCount > 9 ? '9+' : unreadEventsCount}
@@ -2759,14 +3719,14 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
             </div>
           </div>
 
-          {/* Banner si la partida terminó y se minimizó el resultado */}
-          {matchWinner && resultDismissed && (
+          {/* Única franja prioritaria: muestra solo lo más urgente sin tapar el mapa */}
+          {matchWinner && resultDismissed ? (
             <div
               role="status"
-              className="flex items-center justify-between gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2 text-xs font-semibold text-amber-950 shadow-sm"
+              className="flex items-center justify-between gap-2 rounded-xl border border-amber-200 bg-amber-50/95 px-3 py-1.5 text-xs font-semibold text-amber-950 shadow-sm backdrop-blur-xs"
             >
-              <span className="flex items-center gap-2">
-                <Trophy className="h-4 w-4 text-amber-600 shrink-0" aria-hidden="true" />
+              <span className="flex items-center gap-1.5 truncate">
+                <Trophy className="h-3.5 w-3.5 text-amber-600 shrink-0" aria-hidden="true" />
                 <span>
                   {matchWinner === 'hiders'
                     ? '¡Ganan los Fugitivos!'
@@ -2776,172 +3736,86 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
               <button
                 type="button"
                 onClick={() => setResultDismissed(false)}
-                className="min-h-[32px] rounded-lg bg-slate-900 px-3 text-xs font-semibold text-white hover:bg-slate-800"
+                className="min-h-[28px] rounded-lg bg-slate-900 px-2.5 text-[11px] font-semibold text-white hover:bg-slate-800 shrink-0"
               >
                 Ver resultado
               </button>
             </div>
-          )}
-
-          {/* Estado de Baliza de Extracción */}
-          {!matchWinner && isHuntPhase && extractionBeacon && (
-            <div
-              role="status"
-              className={`flex items-center justify-between gap-3 rounded-xl px-3.5 py-2 text-xs font-semibold shadow-sm ${
-                isCapturingBeacon
-                  ? 'bg-emerald-600 text-white'
-                  : isBeaconUnlocked
-                  ? 'border border-emerald-200 bg-emerald-50 text-emerald-900'
-                  : 'border border-slate-200 bg-white/95 text-slate-800'
-              }`}
-            >
-              <span className="flex items-center gap-2 min-w-0">
-                <Radio className="h-4 w-4 shrink-0" aria-hidden="true" />
-                <span className="truncate">
-                  {isCapturingBeacon
-                    ? `Activando baliza... aguanta ${Math.ceil(
-                        beaconHoldRemainingSec
-                      )} s`
-                    : isBeaconUnlocked
-                    ? myRole === 'hider'
-                      ? `Baliza activa: quédate dentro (${beaconHoldSec} s)`
-                      : 'Baliza activa: vigila el punto verde'
-                    : `Baliza disponible en ${formatDurationSec(
-                        beaconUnlockRemainingSec
-                      )}`}
-                </span>
-              </span>
-              {beaconDistanceMeters !== null && (
-                <span className="font-mono font-semibold tabular-nums shrink-0">
-                  {Math.round(beaconDistanceMeters)} m
-                </span>
-              )}
-            </div>
-          )}
-
-          {/* Alerta por ubicación GPS desactivada en otro jugador */}
-          {locationTamperingPlayers.length > 0 && (
+          ) : !myCaughtRecord && isInStorm && stormOverflowMeters !== null ? (
             <div
               role="alert"
-              className="flex items-center gap-2 rounded-xl bg-rose-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm"
+              className={`flex items-center justify-between gap-2 rounded-xl px-3 py-1.5 text-xs font-semibold text-white shadow-sm ${
+                isStormExposed ? 'bg-rose-600' : 'bg-violet-600'
+              }`}
             >
-              <MapPinOff className="h-4 w-4 shrink-0" aria-hidden="true" />
-              <span>
-                {locationTamperingPlayers.map((p) => p.name).join(', ')} apagó su
-                ubicación (último punto visible).
+              <span className="flex items-center gap-1.5 truncate">
+                <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                <span className="truncate">
+                  {isStormExposed
+                    ? `Fuera de zona · Visible · ${Math.ceil(stormGraceRemainingSec)}s`
+                    : `Vuelve a la zona en ${Math.ceil(stormGraceRemainingSec)}s`}
+                </span>
+              </span>
+              <span className="font-mono tabular-nums shrink-0">
+                +{Math.round(stormOverflowMeters)}m
               </span>
             </div>
-          )}
-
-          {/* Aviso de fase de escondite para fugitivos */}
-          {isHidePhase && myRole === 'hider' && (
+          ) : locationTamperingPlayers.length > 0 ? (
             <div
-              role="status"
-              className="flex items-center justify-between gap-3 rounded-xl bg-emerald-600 px-3.5 py-2 text-xs sm:text-sm font-semibold text-white shadow-sm"
+              role="alert"
+              className="flex items-center gap-2 rounded-xl bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm"
             >
-              <span className="flex items-center gap-2">
-                <Shield className="h-4 w-4 shrink-0" aria-hidden="true" />
-                <span>¡Corre a esconderte! Los buscadores están esperando.</span>
-              </span>
-              <span className="rounded-lg bg-white/20 px-2 py-0.5 font-mono font-semibold tabular-nums shrink-0">
-                {Math.ceil(hideRemainingSec)} s
+              <MapPinOff className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              <span className="truncate">
+                {locationTamperingPlayers.map((p) => p.name).join(', ')} apagó su GPS
               </span>
             </div>
-          )}
-
-          {/* Aviso de fin de cacería */}
-          {allHidersCaught && (!matchWinner || !resultWaitDone) && (
+          ) : allHidersCaught && (!matchWinner || !resultWaitDone) ? (
             <div
               role="status"
-              className="flex items-center gap-2 rounded-xl bg-emerald-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm"
+              className="flex items-center gap-2 rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm"
             >
-              <CheckCircle2 className="h-4 w-4 shrink-0" />
-              <span>
+              <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate">
                 {matchWinner
-                  ? `${
-                      infectionModeEnabled
-                        ? 'Último fugitivo atrapado'
-                        : 'Último fugitivo eliminado'
-                    } · Resultado en ${
+                  ? `Fin de cacería · Resultado en ${
                       waitDeadlineMsRef.current
                         ? Math.max(
                             1,
                             Math.ceil((waitDeadlineMsRef.current - nowMs) / 1000)
                           )
                         : 1
-                    } s...`
-                  : infectionModeEnabled
-                  ? 'Todos los fugitivos infectados o eliminados. Calculando resultado...'
-                  : 'Todos los fugitivos eliminados. Calculando resultado...'}
+                    }s...`
+                  : 'Calculando resultado...'}
               </span>
             </div>
-          )}
-
-          {/* Toast de eliminación */}
-          {captureToast && (
+          ) : isPhotoChallengeActive && photoChallenge ? (
             <div
               role="status"
-              className="flex items-center gap-2.5 rounded-xl bg-slate-900 px-3.5 py-2 text-xs font-semibold text-white shadow-sm"
-            >
-              <PixelSkull className="h-4 w-4 shrink-0" />
-              <span>{captureToast}</span>
-            </div>
-          )}
-
-          {/* Alerta por tormenta */}
-          {!myCaughtRecord && isInStorm && stormOverflowMeters !== null && (
-            <div
-              role="alert"
-              className={`flex items-center justify-between gap-2 rounded-xl px-3.5 py-2 text-xs font-semibold text-white shadow-sm ${
-                isStormExposed ? 'bg-rose-600' : 'bg-violet-600'
-              }`}
-            >
-              <span className="flex items-center gap-2">
-                <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden="true" />
-                <span>
-                  {isStormExposed
-                    ? `Fuera de zona: ubicación visible · ${Math.ceil(
-                        stormGraceRemainingSec
-                      )} s`
-                    : `Fuera de zona · Vuelve en ${Math.ceil(
-                        stormGraceRemainingSec
-                      )} s`}
-                </span>
-              </span>
-              <span className="font-mono tabular-nums shrink-0">
-                +{Math.round(stormOverflowMeters)} m
-              </span>
-            </div>
-          )}
-
-          {/* Reto activo: Foto con el cazador */}
-          {isPhotoChallengeActive && photoChallenge && (
-            <div
-              role="status"
-              className={`flex flex-wrap items-center justify-between gap-2.5 rounded-xl px-3.5 py-2 text-xs font-semibold shadow-sm ${
+              className={`flex items-center justify-between gap-2 rounded-xl px-3 py-1.5 text-xs font-semibold shadow-sm ${
                 myRole === 'hider' && !myCaughtRecord && myPhotoStatus !== 'accepted'
-                  ? 'border border-amber-200 bg-amber-50 text-amber-950'
+                  ? 'border border-amber-200 bg-amber-50/95 text-amber-950'
                   : 'border border-slate-200 bg-white/95 text-slate-900'
               }`}
             >
-              <div className="flex items-center gap-2 min-w-0">
-                <Camera className="h-4 w-4 shrink-0" aria-hidden="true" />
+              <span className="flex items-center gap-1.5 min-w-0 truncate">
+                <Camera className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                 <span className="truncate">
                   {myRole === 'seeker'
-                    ? `Reto foto · Quedan ${Math.ceil(photoChallengeRemainingSec)} s`
+                    ? `Reto foto · ${Math.ceil(photoChallengeRemainingSec)}s`
                     : myPhotoStatus === 'accepted'
-                    ? `Foto enviada (${Math.ceil(photoChallengeRemainingSec)} s)`
+                    ? `Foto enviada (${Math.ceil(photoChallengeRemainingSec)}s)`
                     : myPhotoStatus === 'rejected'
-                    ? `Foto rechazada · Hazte otra (${Math.ceil(photoChallengeRemainingSec)} s)`
-                    : `Hazte una foto con el cazador (${Math.ceil(photoChallengeRemainingSec)} s)`}
+                    ? `Foto rechazada · Repítela (${Math.ceil(photoChallengeRemainingSec)}s)`
+                    : `Selfie con cazador (${Math.ceil(photoChallengeRemainingSec)}s)`}
                 </span>
-              </div>
+              </span>
 
               {myRole === 'hider' &&
                 !myCaughtRecord &&
                 myPhotoStatus !== 'accepted' && (
-                  <label className="inline-flex min-h-[34px] cursor-pointer items-center gap-1.5 rounded-lg bg-slate-900 px-3 text-xs font-semibold text-white hover:bg-slate-800 shrink-0">
-                    <Camera className="h-3.5 w-3.5" aria-hidden="true" />
+                  <label className="inline-flex min-h-[28px] cursor-pointer items-center gap-1 rounded-lg bg-slate-900 px-2.5 text-[11px] font-semibold text-white hover:bg-slate-800 shrink-0">
+                    <Camera className="h-3 w-3" aria-hidden="true" />
                     <span>{photoUploading ? 'Subiendo...' : 'Hacer foto'}</span>
                     <input
                       type="file"
@@ -2985,9 +3859,9 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
                 <button
                   type="button"
                   onClick={() => setShowPhotoModal(true)}
-                  className="min-h-[34px] rounded-lg bg-slate-900 px-3 text-xs font-semibold text-white hover:bg-slate-800 shrink-0"
+                  className="min-h-[28px] rounded-lg bg-slate-900 px-2.5 text-[11px] font-semibold text-white hover:bg-slate-800 shrink-0"
                 >
-                  Ver fotos (
+                  Fotos (
                   {
                     Object.values(photoChallenge.completedBy || {}).filter(
                       (s) => s.status === 'accepted'
@@ -2997,122 +3871,280 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
                 </button>
               )}
             </div>
+          ) : !matchWinner && isHuntPhase && isCapturingBeacon ? (
+            <div
+              role="status"
+              className="flex items-center justify-between gap-2 rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm"
+            >
+              <span className="flex items-center gap-1.5 truncate">
+                <Radio className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                <span>
+                  Activando baliza... aguanta {Math.ceil(beaconHoldRemainingSec)}s
+                </span>
+              </span>
+            </div>
+          ) : isHidePhase && myRole === 'hider' ? (
+            <div
+              role="status"
+              className="flex items-center justify-between gap-2 rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm"
+            >
+              <span className="flex items-center gap-1.5 truncate">
+                <Shield className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                <span>¡Escóndete antes de que salgan!</span>
+              </span>
+              <span className="font-mono font-bold tabular-nums shrink-0">
+                {Math.ceil(hideRemainingSec)}s
+              </span>
+            </div>
+          ) : captureToast || abilityToast ? (
+            <div
+              role="status"
+              className="flex items-center gap-2 rounded-xl bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white shadow-sm"
+            >
+              <PixelSkull className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate">{captureToast || abilityToast}</span>
+            </div>
+          ) : antiCampWarningSec !== null || isMyCampExposed ? (
+            <div
+              role="alert"
+              className={`flex items-center gap-2 rounded-xl px-3 py-1.5 text-xs font-semibold shadow-sm ${
+                isMyCampExposed
+                  ? 'bg-rose-600 text-white'
+                  : 'bg-amber-400 text-slate-950'
+              }`}
+            >
+              <span>
+                🚨{' '}
+                {isMyCampExposed
+                  ? 'Visible en el mapa por quedarte quieto'
+                  : `Muévete en ${antiCampWarningSec}s o aparecerás en el mapa`}
+              </span>
+            </div>
+          ) : !matchWinner && contractHuntEnabled && myRole === 'seeker' && myContractPlayer ? (
+            <div
+              role="status"
+              className="flex items-center justify-between gap-2 rounded-xl border border-rose-200 bg-rose-50/95 px-3 py-1.5 text-xs font-semibold text-rose-950 shadow-sm"
+            >
+              <span className="flex items-center gap-1.5 min-w-0 truncate">
+                <Target className="h-3.5 w-3.5 shrink-0 text-rose-600" aria-hidden="true" />
+                <span className="truncate">
+                  Objetivo: {myContractPlayer.emoji} {myContractPlayer.name}
+                </span>
+              </span>
+              {myContractsCompleted > 0 && (
+                <span className="font-mono text-[11px] font-bold text-rose-700 shrink-0">
+                  {myContractsCompleted} {myContractsCompleted === 1 ? 'hecho' : 'hechos'}
+                </span>
+              )}
+            </div>
+          ) : !matchWinner && isHuntPhase && isBeaconUnlocked && extractionBeacon ? (
+            <div
+              role="status"
+              className="flex items-center justify-between gap-2 rounded-xl border border-emerald-200 bg-emerald-50/95 px-3 py-1.5 text-xs font-semibold text-emerald-950 shadow-sm"
+            >
+              <span className="flex items-center gap-1.5 truncate">
+                <Radio className="h-3.5 w-3.5 shrink-0 text-emerald-600" aria-hidden="true" />
+                <span className="truncate">
+                  {myRole === 'hider'
+                    ? `Baliza activa · aguanta ${beaconHoldSec}s dentro`
+                    : 'Baliza activa · vigila el punto verde'}
+                </span>
+              </span>
+              {beaconDistanceMeters !== null && (
+                <span className="font-mono tabular-nums shrink-0">
+                  {Math.round(beaconDistanceMeters)}m
+                </span>
+              )}
+            </div>
+          ) : !matchWinner && isHuntPhase && classicHintsEnabled && classicHintRevealUntilMs > nowMs ? (
+            <div
+              role="status"
+              className="flex items-center gap-1.5 rounded-xl bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm"
+            >
+              <span>🧭</span>
+              <span className="truncate">
+                {classicHintLabel ||
+                  `Posición visible (${Math.max(
+                    1,
+                    Math.ceil((classicHintRevealUntilMs - nowMs) / 1000)
+                  )}s)`}
+              </span>
+            </div>
+          ) : !matchWinner && isHuntPhase && isPanicActive ? (
+            <div
+              role="status"
+              className="flex items-center justify-between gap-2 rounded-xl bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm"
+            >
+              <span>⚡ Recta final</span>
+              {myRole === 'seeker' && panicTargetDistM !== null && (
+                <span className="font-mono tabular-nums">
+                  {panicTargetDistM}m
+                </span>
+              )}
+            </div>
+          ) : !matchWinner && isHuntPhase && hotColdInfo ? (
+            <div
+              role="status"
+              className={`inline-flex items-center gap-1.5 rounded-xl px-2.5 py-1 text-[11px] font-semibold shadow-sm ${
+                hotColdInfo.tone === 'hot'
+                  ? 'bg-rose-600 text-white'
+                  : hotColdInfo.tone === 'warm'
+                  ? 'bg-amber-400 text-slate-950'
+                  : 'border border-slate-200 bg-white/95 text-slate-800'
+              }`}
+            >
+              <span aria-hidden="true">
+                {hotColdInfo.tone === 'cold' ? '❄️' : '🌡️'}
+              </span>
+              <span>{hotColdInfo.label}</span>
+            </div>
+          ) : null}
+
+          {/* Brújula táctica (solo si el usuario la enciende) */}
+          {pocketCompassOn && pocketGuidance && !matchWinner && !myCaughtRecord && (
+            <div
+              role="status"
+              className="flex items-center justify-between gap-2.5 rounded-xl bg-slate-900/95 px-3 py-1.5 text-xs text-white shadow-md backdrop-blur-xs"
+            >
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-emerald-500/20 text-emerald-300">
+                  <Navigation
+                    className="h-3.5 w-3.5 transition-transform duration-150"
+                    style={{
+                      transform: `rotate(${Math.round(pocketGuidance.relDeg)}deg)`,
+                    }}
+                    aria-hidden="true"
+                  />
+                </div>
+                <div className="min-w-0 flex items-baseline gap-1.5">
+                  <span className="truncate font-semibold">{pocketGuidance.label}</span>
+                  <span className="font-mono text-[11px] text-slate-300 tabular-nums shrink-0">
+                    · {pocketGuidance.distM}m {pocketGuidance.cardinal}
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setPocketVoiceOn((v) => !v)}
+                  aria-label={
+                    pocketVoiceOn ? 'Silenciar voz' : 'Activar avisos por voz'
+                  }
+                  className="flex h-7 w-7 items-center justify-center rounded-lg bg-white/10 text-white hover:bg-white/20"
+                >
+                  {pocketVoiceOn ? (
+                    <Volume2 className="h-3.5 w-3.5" />
+                  ) : (
+                    <VolumeX className="h-3.5 w-3.5 text-slate-400" />
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPocketCompassOn(false)}
+                  aria-label="Desactivar brújula"
+                  className="flex h-7 w-7 items-center justify-center rounded-lg bg-white/10 text-white hover:bg-white/20"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </div>
           )}
 
-          {/* Indicadores activos en línea compacta */}
-          {!matchWinner &&
-            isHuntPhase &&
-            (classicHintsEnabled ||
-              hotColdInfo ||
-              fogEnabled ||
-              radarEnabled ||
-              trailEnabled ||
-              isMyStealthStill ||
-              antiCampWarningSec !== null ||
-              isMyCampExposed ||
-              isPanicActive) && (
-              <div className="flex flex-wrap items-center gap-1.5">
-                {classicHintsEnabled && (
-                  <span
-                    className={`inline-flex items-center gap-1 rounded-lg px-2 py-0.5 font-mono text-[11px] font-semibold shadow-xs ${
-                      classicHintRevealUntilMs > nowMs
-                        ? 'bg-sky-600 text-white'
-                        : 'border border-slate-200 bg-white/95 text-slate-800'
-                    }`}
-                  >
-                    <span aria-hidden="true">🧭</span>
-                    <span>
-                      {classicHintRevealUntilMs > nowMs
-                        ? `Visible ${Math.max(
-                            1,
-                            Math.ceil((classicHintRevealUntilMs - nowMs) / 1000)
-                          )}s`
-                        : `Pista ${Math.max(
-                            1,
-                            Math.ceil(
-                              classicHintIntervalSec -
-                                (huntElapsedSec % classicHintIntervalSec)
-                            )
-                          )}s`}
-                    </span>
-                  </span>
-                )}
-                {hotColdInfo && (
-                  <span
-                    className={`inline-flex items-center gap-1 rounded-lg px-2 py-0.5 text-[11px] font-semibold shadow-xs ${
-                      hotColdInfo.tone === 'hot'
-                        ? 'bg-rose-600 text-white'
-                        : hotColdInfo.tone === 'warm'
-                        ? 'bg-amber-400 text-slate-950'
-                        : 'border border-slate-200 bg-white/95 text-slate-800'
-                    }`}
-                  >
-                    <span aria-hidden="true">
-                      {hotColdInfo.tone === 'cold' ? '❄️' : '🌡️'}
-                    </span>
-                    <span>{hotColdInfo.label}</span>
-                  </span>
-                )}
-                {isPanicActive && (
-                  <span className="inline-flex items-center gap-1 rounded-lg bg-rose-600 px-2 py-0.5 font-mono text-[11px] font-semibold text-white shadow-xs">
-                    <span aria-hidden="true">⚡</span>
-                    <span>
-                      {myRole === 'seeker' && panicTargetDistM !== null
-                        ? `${panicTargetDistM}m`
-                        : 'Recta final'}
-                    </span>
-                  </span>
-                )}
-                {isMyStealthStill && (
-                  <span className="inline-flex items-center gap-1 rounded-lg bg-slate-900 px-2 py-0.5 text-[11px] font-semibold text-white shadow-xs">
-                    <span aria-hidden="true">🥷</span>
-                    <span>Sigilo</span>
-                  </span>
-                )}
-                {antiCampWarningSec !== null && (
-                  <span className="inline-flex items-center gap-1 rounded-lg bg-amber-400 px-2 py-0.5 text-[11px] font-semibold text-slate-950 shadow-xs">
-                    <span aria-hidden="true">🚨</span>
-                    <span>Muévete ({antiCampWarningSec}s)</span>
-                  </span>
-                )}
-                {isMyCampExposed && (
-                  <span className="inline-flex items-center gap-1 rounded-lg bg-rose-600 px-2 py-0.5 text-[11px] font-semibold text-white shadow-xs">
-                    <span aria-hidden="true">🚨</span>
-                    <span>Visible por quieto</span>
-                  </span>
-                )}
-                {fogEnabled && (
-                  <span className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white/90 px-2 py-0.5 font-mono text-[11px] font-medium text-slate-700">
-                    🌫️ {fogRadiusM}m
-                  </span>
-                )}
-                {radarEnabled && (
-                  <span className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white/90 px-2 py-0.5 font-mono text-[11px] font-medium text-slate-700">
-                    📡 {radarIntervalSec}s
-                  </span>
-                )}
-                {trailEnabled && (
-                  <span className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white/90 px-2 py-0.5 font-mono text-[11px] font-medium text-slate-700">
-                    👣 {trailDurationSec}s
-                  </span>
-                )}
-              </div>
-            )}
-
           {gpsError && activeTab === 'map' && (
-            <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-medium text-amber-900 shadow-xs">
+            <div className="rounded-xl border border-amber-200 bg-amber-50/95 px-3 py-1.5 text-xs font-medium text-amber-900 shadow-xs">
               {gpsError}
             </div>
           )}
         </div>
       </header>
 
-      {/* Controles flotantes del mapa */}
+      {/* Controles flotantes del mapa en zona de pulgar */}
       <div className="pointer-events-none relative z-10 flex-1">
         {activeTab === 'map' && (
           <>
-            {allowTestJoystick && joystickActive && (
-              <div className="pointer-events-auto absolute left-3 bottom-4 sm:left-5 sm:bottom-5 z-20">
+            {/* Esquina inferior izquierda: Habilidades, Captura y/o Joystick */}
+            <div className="pointer-events-auto absolute left-3 bottom-3 sm:left-5 sm:bottom-4 z-20 flex flex-col items-start gap-2">
+              {myRole === 'seeker' && !allHidersCaught && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowMapTools(false);
+                    setActiveTab('players');
+                  }}
+                  className="inline-flex min-h-[44px] items-center gap-1.5 rounded-xl bg-rose-600 px-3.5 py-2 text-xs font-semibold text-white shadow-md hover:bg-rose-700"
+                >
+                  <UserCheck className="h-4 w-4" aria-hidden="true" />
+                  <span>
+                    {infectionModeEnabled ? 'Infectar' : 'Capturar'} (
+                    {hiderStats.activeHiders})
+                  </span>
+                </button>
+              )}
+
+              {!matchWinner &&
+                isHuntPhase &&
+                !myCaughtRecord &&
+                abilitiesEnabled &&
+                !(allowTestJoystick && joystickActive) && (
+                  <div className="flex items-center gap-1.5">
+                    {myRole === 'hider' ? (
+                      <>
+                        <button
+                          type="button"
+                          disabled={abilityBusy || abilitiesRemaining <= 0}
+                          onClick={() => void handleUseAbility('decoy')}
+                          title={`Colocar señuelo (${abilitiesRemaining}/${abilitiesMax})`}
+                          className="inline-flex min-h-[42px] items-center gap-1 rounded-xl border border-violet-200 bg-white/95 px-3 text-xs font-semibold text-violet-900 shadow-md backdrop-blur-xs hover:bg-violet-50 disabled:opacity-45"
+                        >
+                          <span>🎭 Señuelo</span>
+                          <span className="font-mono text-[10px] text-violet-600 tabular-nums">
+                            ({abilitiesRemaining})
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          disabled={abilityBusy || abilitiesRemaining <= 0 || isMyCloakActive}
+                          onClick={() => void handleUseAbility('cloak')}
+                          title="Ocultarse del radar y pistas"
+                          className="inline-flex min-h-[42px] items-center gap-1 rounded-xl border border-sky-200 bg-white/95 px-3 text-xs font-semibold text-sky-900 shadow-md backdrop-blur-xs hover:bg-sky-50 disabled:opacity-45"
+                        >
+                          <span>
+                            {isMyCloakActive ? `🫥 ${myCloakRemainingSec}s` : '🫥 Silencio'}
+                          </span>
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          disabled={abilityBusy || abilitiesRemaining <= 0}
+                          onClick={() => void handleUseAbility('sonar')}
+                          title={`Lanzar sonar (${abilitiesRemaining}/${abilitiesMax})`}
+                          className="inline-flex min-h-[42px] items-center gap-1 rounded-xl border border-rose-200 bg-white/95 px-3 text-xs font-semibold text-rose-900 shadow-md backdrop-blur-xs hover:bg-rose-50 disabled:opacity-45"
+                        >
+                          <span>📡 Sonar</span>
+                          <span className="font-mono text-[10px] text-rose-600 tabular-nums">
+                            ({abilitiesRemaining})
+                          </span>
+                        </button>
+                        <button
+                          type="button"
+                          disabled={abilityBusy || abilitiesRemaining <= 0 || isQuickScanActive}
+                          onClick={() => void handleUseAbility('scan')}
+                          title="Rastreo rápido"
+                          className="inline-flex min-h-[42px] items-center gap-1 rounded-xl border border-amber-200 bg-white/95 px-3 text-xs font-semibold text-amber-900 shadow-md backdrop-blur-xs hover:bg-amber-50 disabled:opacity-45"
+                        >
+                          <span>
+                            {isQuickScanActive ? '⚡ Rastreando...' : '⚡ Rastreo'}
+                          </span>
+                        </button>
+                      </>
+                    )}
+                  </div>
+                )}
+
+              {allowTestJoystick && joystickActive && (
                 <VirtualJoystick
                   initialSpeedId={testJoystickDefaultSpeed}
                   followMap={joystickFollowMap}
@@ -3120,62 +4152,212 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
                   onMove={handleJoystickMove}
                   onClose={handleToggleJoystick}
                 />
-              </div>
-            )}
+              )}
+            </div>
 
-            {myRole === 'seeker' && !allHidersCaught && (
-              <div
-                className={`pointer-events-auto absolute left-3 sm:left-5 transition-all ${
-                  allowTestJoystick && joystickActive
-                    ? 'bottom-[218px] sm:bottom-[224px]'
-                    : 'bottom-4 sm:bottom-5'
-                }`}
-              >
-                <button
-                  type="button"
-                  onClick={() => setActiveTab('players')}
-                  className="inline-flex min-h-[44px] items-center gap-2 rounded-xl bg-rose-600 px-4 py-2 text-xs font-semibold text-white shadow-md hover:bg-rose-700"
-                >
-                  <UserCheck className="h-4 w-4" aria-hidden="true" />
-                  <span>
-                    {infectionModeEnabled ? 'Infectar' : 'Marcar captura'} (
-                    {hiderStats.activeHiders})
-                  </span>
-                </button>
-              </div>
-            )}
+            {/* Esquina inferior derecha: 4 botones esenciales + cajón de herramientas */}
+            <div className="pointer-events-auto absolute right-3 bottom-3 sm:right-5 sm:bottom-4 z-20 flex flex-col items-end gap-2">
+              {showMapTools && (
+                <div className="w-60 rounded-2xl border border-slate-200 bg-white/95 p-3 shadow-xl backdrop-blur-md space-y-2.5 text-xs">
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                    <span className="font-display font-bold text-slate-900">
+                      Herramientas del mapa
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setShowMapTools(false)}
+                      aria-label="Cerrar herramientas"
+                      className="flex h-6 w-6 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
 
-            <div className="pointer-events-auto absolute right-3 bottom-4 sm:right-5 sm:bottom-5 flex flex-col gap-2">
-              {allowTestJoystick && (
-                <button
-                  type="button"
-                  onClick={handleToggleJoystick}
-                  aria-label={
-                    joystickActive
-                      ? 'Desactivar mando virtual'
-                      : 'Activar mando virtual'
-                  }
-                  title={
-                    joystickActive
-                      ? 'Volver al GPS real'
-                      : 'Mando para moverse sin caminar'
-                  }
-                  className={`flex h-11 w-11 items-center justify-center rounded-xl border shadow-md transition-colors ${
-                    joystickActive
-                      ? 'border-emerald-600 bg-emerald-600 text-white'
-                      : 'border-slate-200 bg-white/95 text-slate-700 hover:bg-white'
-                  }`}
-                >
-                  <Gamepad2 className="h-5 w-5" />
-                </button>
+                  {/* Controles rápidos */}
+                  <div className="space-y-1.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        void handleTogglePocketCompass();
+                        setShowMapTools(false);
+                      }}
+                      className={`flex w-full min-h-[38px] items-center justify-between rounded-xl border px-3 font-semibold transition-colors ${
+                        pocketCompassOn
+                          ? 'border-slate-900 bg-slate-900 text-white'
+                          : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                      }`}
+                    >
+                      <span className="flex items-center gap-2">
+                        <Navigation className="h-3.5 w-3.5" aria-hidden="true" />
+                        <span>Brújula y vibración</span>
+                      </span>
+                      <span className="text-[10px] opacity-80">
+                        {pocketCompassOn ? 'ON' : 'OFF'}
+                      </span>
+                    </button>
+
+                    {allowTestJoystick && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          handleToggleJoystick();
+                          setShowMapTools(false);
+                        }}
+                        className={`flex w-full min-h-[38px] items-center justify-between rounded-xl border px-3 font-semibold transition-colors ${
+                          joystickActive
+                            ? 'border-emerald-600 bg-emerald-50 text-emerald-800'
+                            : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                        }`}
+                      >
+                        <span className="flex items-center gap-2">
+                          <Gamepad2 className="h-3.5 w-3.5" aria-hidden="true" />
+                          <span>Mando virtual</span>
+                        </span>
+                        <span className="text-[10px] opacity-80">
+                          {joystickActive ? 'ON' : 'OFF'}
+                        </span>
+                      </button>
+                    )}
+
+                    {/* Zoom accesible dentro de herramientas para móvil */}
+                    <div className="grid grid-cols-2 gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => handleZoom(1)}
+                        className="flex min-h-[36px] items-center justify-center gap-1 rounded-xl border border-slate-200 bg-white font-semibold text-slate-700 hover:bg-slate-50"
+                      >
+                        <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+                        <span>Acercar</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleZoom(-1)}
+                        className="flex min-h-[36px] items-center justify-center gap-1 rounded-xl border border-slate-200 bg-white font-semibold text-slate-700 hover:bg-slate-50"
+                      >
+                        <Minus className="h-3.5 w-3.5" aria-hidden="true" />
+                        <span>Alejar</span>
+                      </button>
+                    </div>
+
+                    {abilitiesEnabled &&
+                      isHuntPhase &&
+                      !myCaughtRecord &&
+                      allowTestJoystick &&
+                      joystickActive && (
+                        <div className="grid grid-cols-2 gap-1.5 pt-1 border-t border-slate-100">
+                          {myRole === 'hider' ? (
+                            <>
+                              <button
+                                type="button"
+                                disabled={abilityBusy || abilitiesRemaining <= 0}
+                                onClick={() => void handleUseAbility('decoy')}
+                                className="min-h-[36px] rounded-xl border border-violet-200 bg-violet-50 px-2 font-semibold text-violet-900 disabled:opacity-45"
+                              >
+                                🎭 Señuelo ({abilitiesRemaining})
+                              </button>
+                              <button
+                                type="button"
+                                disabled={abilityBusy || abilitiesRemaining <= 0 || isMyCloakActive}
+                                onClick={() => void handleUseAbility('cloak')}
+                                className="min-h-[36px] rounded-xl border border-sky-200 bg-sky-50 px-2 font-semibold text-sky-900 disabled:opacity-45"
+                              >
+                                {isMyCloakActive ? `🫥 ${myCloakRemainingSec}s` : '🫥 Silencio'}
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                disabled={abilityBusy || abilitiesRemaining <= 0}
+                                onClick={() => void handleUseAbility('sonar')}
+                                className="min-h-[36px] rounded-xl border border-rose-200 bg-rose-50 px-2 font-semibold text-rose-900 disabled:opacity-45"
+                              >
+                                📡 Sonar ({abilitiesRemaining})
+                              </button>
+                              <button
+                                type="button"
+                                disabled={abilityBusy || abilitiesRemaining <= 0 || isQuickScanActive}
+                                onClick={() => void handleUseAbility('scan')}
+                                className="min-h-[36px] rounded-xl border border-amber-200 bg-amber-50 px-2 font-semibold text-amber-900 disabled:opacity-45"
+                              >
+                                {isQuickScanActive ? '⚡ Activo' : '⚡ Rastreo'}
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      )}
+
+                    {sandboxUnlocked && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowMapTools(false);
+                          setShowSandboxModal(true);
+                        }}
+                        className="flex w-full min-h-[38px] items-center justify-center gap-1.5 rounded-xl bg-violet-600 px-3 font-semibold text-white hover:bg-violet-700"
+                      >
+                        <FlaskConical className="h-3.5 w-3.5" aria-hidden="true" />
+                        <span>Laboratorio Solo</span>
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Estado resumido de modificadores y baliza sin saturar el mapa */}
+                  {(extractionBeacon ||
+                    fogEnabled ||
+                    radarEnabled ||
+                    trailEnabled ||
+                    isMyStealthStill ||
+                    classicHintsEnabled) && (
+                    <div className="border-t border-slate-100 pt-2 text-[11px] text-slate-600 space-y-1">
+                      {extractionBeacon && !isBeaconUnlocked && isHuntPhase && (
+                        <p className="font-medium text-slate-700">
+                          🚩 Baliza en{' '}
+                          <span className="font-mono tabular-nums">
+                            {formatDurationSec(beaconUnlockRemainingSec)}
+                          </span>
+                          {beaconDistanceMeters !== null
+                            ? ` · ${Math.round(beaconDistanceMeters)}m`
+                            : ''}
+                        </p>
+                      )}
+                      {classicHintsEnabled && isHuntPhase && (
+                        <p>
+                          🧭 Próxima pista:{' '}
+                          <span className="font-mono tabular-nums">
+                            {Math.max(
+                              1,
+                              Math.ceil(
+                                classicHintIntervalSec -
+                                  (huntElapsedSec % classicHintIntervalSec)
+                              )
+                            )}
+                            s
+                          </span>
+                        </p>
+                      )}
+                      <p className="text-slate-500">
+                        {[
+                          fogEnabled ? `🌫️ Niebla ${fogRadiusM}m` : null,
+                          radarEnabled ? `📡 Radar ${radarIntervalSec}s` : null,
+                          trailEnabled ? `👣 Rastro ${trailDurationSec}s` : null,
+                          isMyStealthStill ? '🥷 Sigilo activo' : null,
+                        ]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </p>
+                    </div>
+                  )}
+                </div>
               )}
 
-              <div className="flex flex-col overflow-hidden rounded-xl border border-slate-200 bg-white/95 shadow-md divide-y divide-slate-100">
+              {/* Zoom directo solo en pantallas medianas/grandes sin gesto táctil */}
+              <div className="hidden sm:flex flex-col overflow-hidden rounded-xl border border-slate-200 bg-white/95 shadow-md divide-y divide-slate-100">
                 <button
                   type="button"
                   onClick={() => handleZoom(1)}
                   aria-label="Acercar mapa"
-                  className="flex h-10 w-11 items-center justify-center text-slate-700 hover:bg-slate-50"
+                  className="flex h-9 w-11 items-center justify-center text-slate-700 hover:bg-slate-50"
                 >
                   <Plus className="h-4 w-4" />
                 </button>
@@ -3183,11 +4365,49 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
                   type="button"
                   onClick={() => handleZoom(-1)}
                   aria-label="Alejar mapa"
-                  className="flex h-10 w-11 items-center justify-center text-slate-700 hover:bg-slate-50"
+                  className="flex h-9 w-11 items-center justify-center text-slate-700 hover:bg-slate-50"
                 >
                   <Minus className="h-4 w-4" />
                 </button>
               </div>
+
+              <button
+                type="button"
+                onClick={() => setShowMapTools((v) => !v)}
+                aria-label="Abrir herramientas del mapa"
+                aria-expanded={showMapTools}
+                title="Herramientas del mapa"
+                className={`relative flex h-11 w-11 items-center justify-center rounded-xl border shadow-md transition-colors ${
+                  showMapTools || pocketCompassOn || joystickActive
+                    ? 'border-slate-900 bg-slate-900 text-white'
+                    : 'border-slate-200 bg-white/95 text-slate-700 hover:bg-white'
+                }`}
+              >
+                <SlidersHorizontal className="h-5 w-5" />
+                {sandboxUnlocked && !showMapTools && (
+                  <span className="absolute top-1.5 right-1.5 h-2 w-2 rounded-full bg-violet-500" />
+                )}
+              </button>
+
+              {chatAllowed && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowMapTools(false);
+                    setShowChatDrawer(true);
+                  }}
+                  aria-label="Abrir chat de partida"
+                  title="Chat de sala"
+                  className="relative flex h-11 w-11 items-center justify-center rounded-xl border border-slate-200 bg-white/95 text-slate-700 shadow-md hover:bg-white"
+                >
+                  <MessageSquare className="h-5 w-5" />
+                  {unreadChatCount > 0 && (
+                    <span className="absolute -top-1 -right-1 flex h-4 min-w-[16px] items-center justify-center rounded-full bg-emerald-600 px-1 font-mono text-[10px] font-bold text-white">
+                      {unreadChatCount > 9 ? '9+' : unreadChatCount}
+                    </span>
+                  )}
+                </button>
+              )}
 
               <button
                 type="button"
@@ -3348,6 +4568,11 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
                                         : caughtInfo.byPlayerId === 'photo'
                                         ? 'Eliminado · Sin foto'
                                         : `Eliminado · Pillado por ${catcherName}`}
+                                    </span>
+                                  )}
+                                  {!caughtInfo && myContractTargetId === p.id && (
+                                    <span className="rounded bg-rose-100 px-1.5 py-0.5 font-semibold text-rose-700 mr-1.5">
+                                      🎯 Tu objetivo
                                     </span>
                                   )}
                                   {!caughtInfo && infectedInfo && (
@@ -3545,7 +4770,11 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
                           {joystickActive
                             ? 'Mando virtual'
                             : myPos
-                            ? `Activo (±${Math.round(myPos.accuracy)}m)`
+                            ? `Suavizado (±${Math.round(myPos.accuracy)}m${
+                                gpsRejectedJumps > 0
+                                  ? ` · ${gpsRejectedJumps} saltos filtrados`
+                                  : ''
+                              })`
                             : gpsError || 'Buscando...'}
                         </dd>
                       </div>
@@ -3558,6 +4787,37 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
                     </dl>
 
                     <div className="space-y-2 border-t border-slate-100 pt-3">
+                      {chatAllowed && (
+                        <button
+                          type="button"
+                          onClick={() => setShowChatDrawer(true)}
+                          className="flex w-full min-h-[42px] items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                        >
+                          <MessageSquare className="h-4 w-4 shrink-0" />
+                          <span>
+                            Abrir chat de sala
+                            {unreadChatCount > 0 ? ` (${unreadChatCount})` : ''}
+                          </span>
+                        </button>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={() => void handleTogglePocketCompass()}
+                        className={`flex w-full min-h-[42px] items-center justify-center gap-2 rounded-xl border px-4 py-2 text-xs font-semibold transition-colors ${
+                          pocketCompassOn
+                            ? 'border-slate-900 bg-slate-900 text-white'
+                            : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                        }`}
+                      >
+                        <Navigation className="h-4 w-4 shrink-0" />
+                        <span>
+                          {pocketCompassOn
+                            ? 'Apagar brújula y vibración'
+                            : 'Activar brújula y distancia por vibración'}
+                        </span>
+                      </button>
+
                       {allowTestJoystick && (
                         <button
                           type="button"
@@ -3728,12 +4988,12 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
         )}
       </div>
 
-      {/* Navegación inferior limpia */}
+      {/* Navegación inferior compacta */}
       <nav
         aria-label="Pestañas de partida"
         className="relative z-30 border-t border-slate-200 bg-white/95 backdrop-blur-md"
       >
-        <div className="mx-auto grid max-w-2xl grid-cols-4 gap-1 px-2 py-1.5 pb-safe">
+        <div className="mx-auto grid max-w-2xl grid-cols-4 gap-1 px-2 py-1 pb-safe">
           {(
             [
               { id: 'map', label: 'Mapa', Icon: MapIcon },
@@ -3754,10 +5014,11 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
                 onClick={() => {
                   setConfirmAction(null);
                   setConfirmCatchId(null);
+                  setShowMapTools(false);
                   setActiveTab(id);
                 }}
                 aria-current={active ? 'page' : undefined}
-                className={`flex min-h-[48px] flex-col items-center justify-center gap-0.5 rounded-xl px-1 py-1 text-[11px] font-semibold transition-colors whitespace-nowrap ${
+                className={`flex min-h-[42px] flex-col items-center justify-center gap-0.5 rounded-xl px-1 py-1 text-[11px] font-semibold transition-colors whitespace-nowrap ${
                   active
                     ? 'bg-emerald-50 text-emerald-700'
                     : 'text-slate-500 hover:text-slate-900'
@@ -3825,20 +5086,562 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
         />
       )}
 
+      {showInfectionOverlay && myInfectedRecord && (
+        <InfectionOverlay
+          playerName={currentPlayer?.name || 'Jugador'}
+          playerEmoji={currentPlayer?.emoji || '🏃'}
+          playerColor={currentPlayer?.color || '#059669'}
+          causeLabel={infectionCauseLabel}
+          autoCloseAfterDone={Boolean(matchWinner)}
+          onClose={handleCloseInfectionOverlay}
+        />
+      )}
+
+      {sandboxUnlocked && showSandboxModal && onSandboxUpdateMatchState && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Laboratorio secreto de pruebas"
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-900/55 p-3 sm:p-4 backdrop-blur-xs"
+        >
+          <div className="w-full max-w-md max-h-[88dvh] flex flex-col overflow-hidden rounded-2xl border border-violet-200 bg-white shadow-xl">
+            <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3 shrink-0">
+              <div className="flex items-center gap-2">
+                <FlaskConical className="h-4 w-4 text-violet-600" aria-hidden="true" />
+                <div>
+                  <h2 className="font-display text-sm sm:text-base font-bold text-slate-900">
+                    Laboratorio Solo (Sin DB)
+                  </h2>
+                  <p className="text-[11px] text-slate-500">
+                    Prueba animaciones, infección, bots y fases en solitario.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowSandboxModal(false)}
+                aria-label="Cerrar laboratorio"
+                className="flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="overflow-y-auto p-4 space-y-4 text-xs">
+              {/* Acciones de infección y eliminación */}
+              <div className="space-y-2">
+                <p className="font-bold uppercase tracking-wider text-[10px] text-slate-500">
+                  Animaciones, bando e infección
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      unlockRetroAudio();
+                      setShowSandboxModal(false);
+                      const hunterId =
+                        players.find(
+                          (p) =>
+                            p.id !== currentPlayerId &&
+                            (match?.roles?.[p.id] ?? 'hider') === 'seeker'
+                        )?.id ||
+                        players.find((p) => p.id !== currentPlayerId)?.id ||
+                        'bot_solo';
+                      await onSandboxUpdateMatchState((prev, baseRules) => {
+                        const nextInfected = { ...(prev.infected || {}) };
+                        const nextCaught = { ...(prev.caught || {}) };
+                        delete nextCaught[currentPlayerId];
+                        nextInfected[currentPlayerId] = {
+                          at: new Date().toISOString(),
+                          byPlayerId: hunterId,
+                        };
+                        return {
+                          ...prev,
+                          roles: {
+                            ...(prev.roles || {}),
+                            [currentPlayerId]: 'seeker',
+                          },
+                          caught: nextCaught,
+                          infected: nextInfected,
+                          winner: null,
+                          winReason: null,
+                          endedAt: null,
+                        };
+                      });
+                    }}
+                    className="min-h-[38px] rounded-xl bg-emerald-600 px-3 py-2 font-bold text-white hover:bg-emerald-700"
+                  >
+                    🧟 Simular que me infectan
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      unlockRetroAudio();
+                      setShowSandboxModal(false);
+                      const hunterId =
+                        players.find(
+                          (p) =>
+                            p.id !== currentPlayerId &&
+                            (match?.roles?.[p.id] ?? 'hider') === 'seeker'
+                        )?.id ||
+                        players.find((p) => p.id !== currentPlayerId)?.id ||
+                        'bot_solo';
+                      await onSandboxUpdateMatchState((prev) => {
+                        const nextCaught = { ...(prev.caught || {}) };
+                        nextCaught[currentPlayerId] = {
+                          at: new Date().toISOString(),
+                          byPlayerId: hunterId,
+                        };
+                        return {
+                          ...prev,
+                          caught: nextCaught,
+                        };
+                      });
+                    }}
+                    className="min-h-[38px] rounded-xl bg-rose-600 px-3 py-2 font-bold text-white hover:bg-rose-700"
+                  >
+                    💀 Simular eliminación
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      const nextRole: PlayerRole =
+                        myRole === 'seeker' ? 'hider' : 'seeker';
+                      await onSandboxUpdateMatchState((prev) => {
+                        const prevInitial =
+                          prev.initialSeekers ?? prev.seekerOrder ?? [];
+                        const nextInitial =
+                          nextRole === 'seeker'
+                            ? Array.from(new Set([...prevInitial, currentPlayerId]))
+                            : prevInitial.filter((id) => id !== currentPlayerId);
+                        const nextInfected = { ...(prev.infected || {}) };
+                        if (nextRole === 'seeker') {
+                          delete nextInfected[currentPlayerId];
+                        }
+                        return {
+                          ...prev,
+                          roles: {
+                            ...(prev.roles || {}),
+                            [currentPlayerId]: nextRole,
+                          },
+                          initialSeekers: nextInitial,
+                          infected: nextInfected,
+                        };
+                      });
+                    }}
+                    className="min-h-[36px] rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-semibold text-slate-800 hover:bg-slate-100"
+                  >
+                    🔄 Cambiar a {myRole === 'seeker' ? 'Fugitivo' : 'Buscador'}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await onSandboxUpdateMatchState((prev) => {
+                        const nextCaught = { ...(prev.caught || {}) };
+                        const nextInfected = { ...(prev.infected || {}) };
+                        delete nextCaught[currentPlayerId];
+                        delete nextInfected[currentPlayerId];
+                        return {
+                          ...prev,
+                          caught: nextCaught,
+                          infected: nextInfected,
+                          winner: null,
+                          winReason: null,
+                          endedAt: null,
+                        };
+                      });
+                    }}
+                    className="min-h-[36px] rounded-xl border border-slate-200 bg-white px-3 py-2 font-semibold text-slate-700 hover:bg-slate-50"
+                  >
+                    ♻️ Revivir / Limpiar estado
+                  </button>
+                </div>
+              </div>
+
+              {/* Simulación de bots */}
+              {botPlayerIds.length > 0 && (
+                <div className="space-y-2 border-t border-slate-100 pt-3">
+                  <p className="font-bold uppercase tracking-wider text-[10px] text-slate-500">
+                    IA y simulación de bots ({botPlayerIds.length})
+                  </p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setSandboxBotsMoving((v) => !v)}
+                      className={`min-h-[36px] rounded-xl border px-3 py-2 font-semibold ${
+                        sandboxBotsMoving
+                          ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                          : 'border-slate-200 bg-white text-slate-700'
+                      }`}
+                    >
+                      {sandboxBotsMoving ? '🤖 Bots moviéndose' : '⏸️ Bots quietos'}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setSandboxBotsAutoPlay((v) => !v)}
+                      className={`min-h-[36px] rounded-xl border px-3 py-2 font-semibold ${
+                        sandboxBotsAutoPlay
+                          ? 'border-violet-200 bg-violet-50 text-violet-900'
+                          : 'border-slate-200 bg-white text-slate-700'
+                      }`}
+                    >
+                      {sandboxBotsAutoPlay
+                        ? '🧠 IA autónoma: ON'
+                        : '🧠 IA autónoma: OFF'}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        handleBringBotsNearMe();
+                        setShowSandboxModal(false);
+                      }}
+                      className="min-h-[36px] rounded-xl border border-slate-200 bg-white px-3 py-2 font-semibold text-slate-700 hover:bg-slate-50"
+                    >
+                      📍 Traer bots aquí
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => void handleSandboxForceBotChat()}
+                      className="min-h-[36px] rounded-xl border border-slate-200 bg-white px-3 py-2 font-semibold text-slate-700 hover:bg-slate-50"
+                    >
+                      💬 Bot habla en chat
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => void handleSandboxForceBotAbility()}
+                      className="min-h-[36px] rounded-xl border border-slate-200 bg-white px-3 py-2 font-semibold text-slate-700 hover:bg-slate-50"
+                    >
+                      🪄 Bot usa habilidad
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const targetBot = players.find(
+                          (p) =>
+                            isBotPlayerId(p.id) &&
+                            (match?.roles?.[p.id] ?? 'hider') === 'hider' &&
+                            !caughtMap[p.id]
+                        );
+                        if (!targetBot) return;
+                        const seekerId =
+                          players.find(
+                            (p) =>
+                              (match?.roles?.[p.id] ?? 'hider') === 'seeker' &&
+                              p.id !== targetBot.id
+                          )?.id || currentPlayerId;
+                        await onMarkCaught(targetBot.id, seekerId);
+                      }}
+                      className="min-h-[36px] rounded-xl border border-violet-200 bg-violet-50 px-3 py-2 font-semibold text-violet-900 hover:bg-violet-100"
+                    >
+                      🎯 {infectionModeEnabled ? 'Bot infecta Bot' : 'Bot caza Bot'}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const seekerBot = players.find(
+                          (p) =>
+                            isBotPlayerId(p.id) &&
+                            (match?.roles?.[p.id] ?? 'hider') === 'seeker'
+                        );
+                        const hidersLeft = players.filter(
+                          (p) =>
+                            (match?.roles?.[p.id] ?? 'hider') === 'hider' &&
+                            !caughtMap[p.id]
+                        );
+                        if (hidersLeft.length === 0) return;
+                        const nowIso = new Date().toISOString();
+                        const actorId = seekerBot?.id || currentPlayerId;
+                        await onSandboxUpdateMatchState((prev, baseRules) => {
+                          const nextRoles = { ...(prev.roles || {}) };
+                          const nextInfected = { ...(prev.infected || {}) };
+                          const nextCaught = { ...(prev.caught || {}) };
+                          const isInf = Boolean(
+                            baseRules.modifiers?.infectionModeEnabled
+                          );
+                          hidersLeft.forEach((h) => {
+                            if (isInf) {
+                              nextRoles[h.id] = 'seeker';
+                              nextInfected[h.id] = { at: nowIso, byPlayerId: actorId };
+                            } else {
+                              nextCaught[h.id] = { at: nowIso, byPlayerId: actorId };
+                            }
+                          });
+                          return {
+                            ...prev,
+                            roles: nextRoles,
+                            infected: nextInfected,
+                            caught: nextCaught,
+                            winner: 'seekers',
+                            winReason: 'all_caught',
+                            endedAt: nowIso,
+                          };
+                        });
+                        setShowSandboxModal(false);
+                      }}
+                      className="col-span-2 min-h-[36px] rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 font-semibold text-rose-900 hover:bg-rose-100"
+                    >
+                      🧟 Infectar/cazar a TODOS (probar victoria Paciente Cero)
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Suite automática de tests */}
+              <div className="space-y-2 border-t border-slate-100 pt-3">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="font-bold uppercase tracking-wider text-[10px] text-slate-500">
+                    Tests de todas las funciones
+                  </p>
+                  {sandboxTestReport && (
+                    <span
+                      className={`font-mono text-[11px] font-bold ${
+                        sandboxTestReport.failed === 0
+                          ? 'text-emerald-700'
+                          : 'text-rose-600'
+                      }`}
+                    >
+                      {sandboxTestReport.passed}/{sandboxTestReport.total} OK
+                    </span>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  disabled={sandboxTestingBusy}
+                  onClick={() => void handleSandboxRunFeatureTests()}
+                  className="w-full min-h-[38px] rounded-xl bg-slate-900 px-3 py-2 font-semibold text-white hover:bg-slate-800 disabled:opacity-50"
+                >
+                  {sandboxTestingBusy
+                    ? 'Ejecutando tests...'
+                    : '🧪 Ejecutar Suite completa de Tests (10 funciones)'}
+                </button>
+                {sandboxTestReport && (
+                  <ul className="max-h-40 overflow-y-auto divide-y divide-slate-100 rounded-xl border border-slate-200 bg-slate-50/70 px-2.5 py-1">
+                    {sandboxTestReport.results.map((t) => (
+                      <li key={t.id} className="py-1.5 text-[11px]">
+                        <p
+                          className={`font-semibold ${
+                            t.passed ? 'text-emerald-800' : 'text-rose-700'
+                          }`}
+                        >
+                          {t.passed ? '✅' : '❌'} {t.name}
+                        </p>
+                        <p className="text-[10px] text-slate-500">{t.detail}</p>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+
+              {/* Fases, tormenta, baliza y resultado */}
+              <div className="space-y-2 border-t border-slate-100 pt-3">
+                <p className="font-bold uppercase tracking-wider text-[10px] text-slate-500">
+                  Tiempo, zonas y eventos
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await onSandboxUpdateMatchState((prev) => ({
+                        ...prev,
+                        rouletteDurationMs: 0,
+                        startedAt: new Date(
+                          Date.now() - ((prev.hideTimeSec ?? 30) + 2) * 1000
+                        ).toISOString(),
+                      }));
+                    }}
+                    className="min-h-[36px] rounded-xl border border-slate-200 bg-white px-3 py-2 font-semibold text-slate-700 hover:bg-slate-50"
+                  >
+                    ⏩ Saltar a Caza
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await onSandboxUpdateMatchState((prev) => ({
+                        ...prev,
+                        startedAt: new Date(
+                          new Date(prev.startedAt).getTime() - 60000
+                        ).toISOString(),
+                      }));
+                    }}
+                    className="min-h-[36px] rounded-xl border border-slate-200 bg-white px-3 py-2 font-semibold text-slate-700 hover:bg-slate-50"
+                  >
+                    🌪️ Avanzar +60 s
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await onSandboxUpdateMatchState((prev) => {
+                        const baseBeacon = prev.extractionBeacon ?? {
+                          lat: snapshot.currentLat,
+                          lng: snapshot.currentLng,
+                          radiusM: 25,
+                          unlockAtSec: 0,
+                        };
+                        return {
+                          ...prev,
+                          extractionBeacon: {
+                            ...baseBeacon,
+                            unlockAtSec: 0,
+                          },
+                        };
+                      });
+                    }}
+                    className="min-h-[36px] rounded-xl border border-slate-200 bg-white px-3 py-2 font-semibold text-slate-700 hover:bg-slate-50"
+                  >
+                    📡 Desbloquear Baliza
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!extractionBeacon) return;
+                      setJoystickActive(true);
+                      setGpsError(null);
+                      setMyPos({
+                        lat: extractionBeacon.lat,
+                        lng: extractionBeacon.lng,
+                        accuracy: 3,
+                      });
+                      mapRef.current?.setView(
+                        [extractionBeacon.lat, extractionBeacon.lng],
+                        17,
+                        { animate: true }
+                      );
+                      setShowSandboxModal(false);
+                    }}
+                    disabled={!extractionBeacon}
+                    className="min-h-[36px] rounded-xl border border-slate-200 bg-white px-3 py-2 font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+                  >
+                    📍 Ir a la Baliza
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await onStartPhotoChallenge(hunterPhotoWindowSec || 45);
+                      setShowSandboxModal(false);
+                    }}
+                    className="min-h-[36px] rounded-xl border border-slate-200 bg-white px-3 py-2 font-semibold text-slate-700 hover:bg-slate-50"
+                  >
+                    📸 Reto Foto ya
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setJoystickActive((v) => !v);
+                      setShowSandboxModal(false);
+                    }}
+                    className="min-h-[36px] rounded-xl border border-slate-200 bg-white px-3 py-2 font-semibold text-slate-700 hover:bg-slate-50"
+                  >
+                    🕹️ {joystickActive ? 'Apagar Joystick' : 'Encender Joystick'}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const base = myPos ?? {
+                        lat: snapshot.currentLat,
+                        lng: snapshot.currentLng,
+                        accuracy: 8,
+                      };
+                      gpsFilterRef.current = filterGpsSample(createGpsFilterState(), {
+                        lat: base.lat,
+                        lng: base.lng,
+                        accuracy: 8,
+                        timestampMs: Date.now() - 2000,
+                      }).state;
+                      const spike = filterGpsSample(gpsFilterRef.current, {
+                        lat: base.lat + 0.015,
+                        lng: base.lng + 0.015,
+                        accuracy: 12,
+                        timestampMs: Date.now(),
+                      });
+                      gpsFilterRef.current = spike.state;
+                      setGpsRejectedJumps(spike.state.rejectedJumps);
+                      triggerAbilityToast(
+                        spike.reason === 'jump_filtered'
+                          ? `🛡️ Salto GPS imposible filtrado (${spike.state.rejectedJumps}).`
+                          : 'Filtro GPS actualizado.'
+                      );
+                      setShowSandboxModal(false);
+                    }}
+                    className="min-h-[36px] rounded-xl border border-slate-200 bg-white px-3 py-2 font-semibold text-slate-700 hover:bg-slate-50"
+                  >
+                    🛰️ Probar anti-salto GPS
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowSandboxModal(false);
+                      void onDeclareWinner('seekers', 'all_caught');
+                    }}
+                    className="min-h-[36px] rounded-xl bg-slate-900 px-3 py-2 font-semibold text-white hover:bg-slate-800"
+                  >
+                    🏆 Ganan Buscadores
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowSandboxModal(false);
+                      void onDeclareWinner('hiders', 'time_expired');
+                    }}
+                    className="col-span-2 min-h-[36px] rounded-xl bg-emerald-700 px-3 py-2 font-semibold text-white hover:bg-emerald-800"
+                  >
+                    🏆 Ganan Fugitivos
+                  </button>
+                </div>
+              </div>
+
+              <div className="border-t border-slate-100 pt-2 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSecretSandboxUnlocked(false);
+                    setShowSandboxModal(false);
+                  }}
+                  className="text-[11px] font-semibold text-slate-500 hover:text-rose-600 underline underline-offset-2"
+                >
+                  Ocultar modo secreto
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {matchWinner &&
         matchWinReason &&
         resultWaitDone &&
         !showEliminationOverlay &&
+        !showInfectionOverlay &&
         !resultDismissed && (
           <MatchResultOverlay
             winner={matchWinner}
             winReason={matchWinReason}
             myRole={myRole}
             isHost={isHost}
+            currentPlayerId={currentPlayerId}
+            matchKey={`${room.id}_${match?.startedAt ?? ''}`}
+            contractsCompletedBy={match?.contractsCompletedBy || {}}
             players={players}
             roles={match?.roles || {}}
             caughtMap={caughtMap}
             infectedMap={infectedMap}
+            initialSeekers={match?.initialSeekers ?? match?.seekerOrder}
             infectionModeEnabled={infectionModeEnabled}
             extractionBeacon={extractionBeacon}
             recapRoutes={recapRoutes}
@@ -3848,6 +5651,21 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
             onDismiss={() => setResultDismissed(true)}
           />
         )}
+
+      {chatAllowed && (
+        <MatchChatDrawer
+          isOpen={showChatDrawer}
+          onClose={() => setShowChatDrawer(false)}
+          roomId={room.id}
+          roomCode={room.code}
+          currentPlayerId={currentPlayerId}
+          playerName={currentPlayer?.name || 'Jugador'}
+          playerEmoji={currentPlayer?.emoji || '🦊'}
+          myRole={myRole}
+          sandboxUnlocked={sandboxUnlocked}
+          onUnreadCountChange={setUnreadChatCount}
+        />
+      )}
 
       {isRoulettePhase && (
         <SeekerRouletteOverlay

@@ -1,7 +1,9 @@
 import React, { useState } from 'react';
 import {
+  Bot,
   Check,
   Copy,
+  FlaskConical,
   Lock,
   LogOut,
   MapPinOff,
@@ -10,10 +12,13 @@ import {
   Play,
   Share2,
   SlidersHorizontal,
+  Trash2,
   Unlock,
   X,
+  Zap,
 } from 'lucide-react';
 import { startBackgroundKeepAlive } from '../lib/backgroundRunner';
+import { isBotPlayerId } from '../lib/soloSandbox';
 import {
   LocationGuardStatus,
   PlayerProfile,
@@ -43,6 +48,10 @@ interface LobbyScreenProps {
   isStartingMatch?: boolean;
   countdownRemainingSec?: number | null;
   onLeaveRoom: () => Promise<void>;
+  sandboxUnlocked?: boolean;
+  onAddBots?: (count: number) => Promise<void>;
+  onRemoveBots?: () => Promise<void>;
+  onInstantStartMatch?: () => Promise<void>;
 }
 
 export const LobbyScreen: React.FC<LobbyScreenProps> = ({
@@ -63,6 +72,10 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
   isStartingMatch = false,
   countdownRemainingSec = null,
   onLeaveRoom,
+  sandboxUnlocked = false,
+  onAddBots,
+  onRemoveBots,
+  onInstantStartMatch,
 }) => {
   const [copiedCode, setCopiedCode] = useState(false);
   const [sharedFeedback, setSharedFeedback] = useState(false);
@@ -176,15 +189,15 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
   };
 
   return (
-    <div className="mx-auto max-w-4xl space-y-6">
+    <div className="mx-auto max-w-4xl space-y-5">
       {/* Cabecera simple de sala */}
-      <section className="clean-card p-5 sm:p-6">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+      <section className="clean-card p-4 sm:p-5">
+        <div className="flex flex-col gap-3.5 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <p className="text-xs font-medium text-slate-500">
               {players.length} {players.length === 1 ? 'jugador' : 'jugadores'}
               {' · '}
-              {isLocked ? 'Entrada cerrada' : 'Sala abierta'}
+              {isLocked ? 'Sala cerrada' : 'Sala abierta'}
               {isHost ? ' · Tú organizas' : ''}
             </p>
             <div className="mt-1 flex items-center gap-2.5">
@@ -279,32 +292,18 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
       )}
 
       {/* Contenido en 2 columnas limpias */}
-      <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-12">
+      <div className="grid grid-cols-1 items-start gap-5 lg:grid-cols-12">
         {/* Lista de jugadores */}
-        <section className="clean-card p-5 sm:p-6 lg:col-span-7">
-          <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-100">
-            <div>
-              <h2 className="font-display text-lg font-bold text-slate-900">
-                Jugadores ({players.length})
-              </h2>
-              {isManualRoles && (
-                <p className="text-xs font-medium text-slate-500">
-                  Reparto manual activo
-                </p>
-              )}
-            </div>
-
-            <button
-              type="button"
-              onClick={() => {
-                setDraftProfile(profile);
-                setEditingProfile(true);
-              }}
-              className="inline-flex min-h-[36px] items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
-            >
-              <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
-              <span>Editar mi perfil</span>
-            </button>
+        <section className="clean-card p-4 sm:p-5 lg:col-span-7">
+          <div className="flex items-center justify-between gap-2 pb-3 border-b border-slate-100">
+            <h2 className="font-display text-base sm:text-lg font-bold text-slate-900">
+              Jugadores ({players.length})
+            </h2>
+            {isManualRoles && (
+              <span className="text-xs font-medium text-slate-500">
+                Reparto manual
+              </span>
+            )}
           </div>
 
           <ul className="divide-y divide-slate-100">
@@ -393,7 +392,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                             setDraftProfile(profile);
                             setEditingProfile(true);
                           }}
-                          className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
+                          className="inline-flex min-h-[34px] items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
                         >
                           <Pencil className="h-3 w-3" aria-hidden="true" />
                           <span>Editar</span>
@@ -443,9 +442,9 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
         </section>
 
         {/* Reglas y empezar */}
-        <section className="clean-card p-5 sm:p-6 space-y-5 lg:col-span-5">
+        <section className="clean-card p-4 sm:p-5 space-y-4 lg:col-span-5">
           <div>
-            <h2 className="font-display text-lg font-bold text-slate-900 mb-2">
+            <h2 className="font-display text-base sm:text-lg font-bold text-slate-900 mb-1.5">
               Resumen de partida
             </h2>
             <RulesSummary rules={room.rules} />
@@ -495,13 +494,67 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                 }`}
               >
                 {isCountingDown
-                  ? `¡El anfitrión inició la cuenta regresiva! Empezando en ${Math.ceil(
+                  ? `¡Empieza la partida en ${Math.ceil(
                       countdownRemainingSec!
-                    )} s...`
+                    )} s!`
                   : players.length < 2
                   ? 'Esperando a que entre al menos 1 amigo más.'
-                  : 'Listo. Esperando a que el anfitrión empiece la partida.'}
+                  : 'Listo. Esperando a que el anfitrión empiece.'}
               </p>
+            )}
+
+            {sandboxUnlocked && isHost && onAddBots && onRemoveBots && (
+              <div className="rounded-xl border border-violet-200 bg-violet-50/70 p-3 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="inline-flex items-center gap-1.5 text-xs font-bold text-violet-900">
+                    <FlaskConical className="h-3.5 w-3.5 text-violet-600" aria-hidden="true" />
+                    <span>Laboratorio Solo (Sin DB)</span>
+                  </span>
+                  <span className="font-mono text-[10px] font-semibold text-violet-700">
+                    {players.filter((p) => isBotPlayerId(p.id)).length} bots
+                  </span>
+                </div>
+                <div className="grid grid-cols-3 gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => void onAddBots(1)}
+                    className="inline-flex min-h-[34px] items-center justify-center gap-1 rounded-lg border border-violet-200 bg-white px-2 text-[11px] font-semibold text-violet-900 hover:bg-violet-100/60"
+                  >
+                    <Bot className="h-3 w-3" aria-hidden="true" />
+                    <span>+1 Bot</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void onAddBots(3)}
+                    className="inline-flex min-h-[34px] items-center justify-center gap-1 rounded-lg border border-violet-200 bg-white px-2 text-[11px] font-semibold text-violet-900 hover:bg-violet-100/60"
+                  >
+                    <Bot className="h-3 w-3" aria-hidden="true" />
+                    <span>+3 Bots</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void onRemoveBots()}
+                    className="inline-flex min-h-[34px] items-center justify-center gap-1 rounded-lg border border-rose-200 bg-white px-2 text-[11px] font-semibold text-rose-700 hover:bg-rose-50"
+                  >
+                    <Trash2 className="h-3 w-3" aria-hidden="true" />
+                    <span>Limpiar</span>
+                  </button>
+                </div>
+                {onInstantStartMatch && players.length >= 2 && (
+                  <button
+                    type="button"
+                    disabled={isStartingMatch || isCountingDown}
+                    onClick={() => {
+                      void startBackgroundKeepAlive();
+                      void onInstantStartMatch();
+                    }}
+                    className="flex min-h-[36px] w-full items-center justify-center gap-1.5 rounded-lg bg-violet-700 px-3 text-xs font-bold text-white hover:bg-violet-800 disabled:opacity-50"
+                  >
+                    <Zap className="h-3.5 w-3.5" aria-hidden="true" />
+                    <span>Empezar al instante (sin espera)</span>
+                  </button>
+                )}
+              </div>
             )}
 
             <button

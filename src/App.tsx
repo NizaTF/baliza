@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Settings } from 'lucide-react';
+import { AchievementsModal } from './components/AchievementsModal';
 import { HomeScreen } from './components/HomeScreen';
 import { KickedOverlay } from './components/KickedOverlay';
 import { LobbyScreen } from './components/LobbyScreen';
@@ -9,16 +10,19 @@ import { OfflineIndicator, PWAInstallButton } from './components/PWAControls';
 import { PixelBalizaMark } from './components/PixelIcons';
 import { RulesEditor } from './components/RulesEditor';
 import { SettingsPanel } from './components/SettingsPanel';
+import { ShareAppButton } from './components/ShareAppButton';
 import {
   ROULETTE_FINAL_MS,
   ROULETTE_ROUND_MS,
 } from './components/SeekerRouletteOverlay';
 import {
+  addBotsToLocalRoom,
   createRoom,
   fetchRoomState,
   joinRoom,
   kickPlayer,
   leaveRoom,
+  removeBotsFromLocalRoom,
   subscribeToRoom,
   subscribeToRoomClockSync,
   subscribeToRoomLocationGuard,
@@ -38,9 +42,16 @@ import {
 import {
   playPixelUiClick,
   playPlayerKickedSting,
+  playSecretUnlockChime,
   playSeekerCountdownBeep,
   unlockRetroAudio,
 } from './lib/retroAudio';
+import {
+  isSecretSandboxUnlocked,
+  setForceLocalSandboxEnabled,
+  setSecretSandboxUnlocked,
+  subscribeSecretSandbox,
+} from './lib/soloSandbox';
 import {
   applyPreferencesToDocument,
   loadPreferences,
@@ -69,6 +80,7 @@ import {
 import {
   DEFAULT_RULES,
   LocationGuardStatus,
+  MatchState,
   MatchWinReason,
   MatchWinner,
   PlayerProfile,
@@ -80,11 +92,30 @@ import {
 
 type AppView = 'home' | 'host_rules' | 'lobby';
 
+function assignInitialContracts(
+  roles: Record<string, PlayerRole>,
+  activePlayers: PlayerRecord[]
+): Record<string, string> {
+  const hiders = activePlayers
+    .filter((p) => (roles[p.id] ?? 'hider') === 'hider')
+    .map((p) => p.id);
+  const seekers = activePlayers
+    .filter((p) => (roles[p.id] ?? 'hider') === 'seeker')
+    .map((p) => p.id);
+  const targets: Record<string, string> = {};
+  if (hiders.length === 0) return targets;
+  seekers.forEach((seekerId, idx) => {
+    targets[seekerId] = hiders[idx % hiders.length];
+  });
+  return targets;
+}
+
 export default function App() {
   const [profile, setProfile] = useState<PlayerProfile>(() => loadProfile());
   const [playerId, setPlayerId] = useState<string>(() => getPlayerId());
   const [view, setView] = useState<AppView>('home');
   const [showSettings, setShowSettings] = useState(false);
+  const [showAchievements, setShowAchievements] = useState(false);
   const [room, setRoom] = useState<RoomRecord | null>(null);
   const [players, setPlayers] = useState<PlayerRecord[]>([]);
   const [initialJoinCode, setInitialJoinCode] = useState<string>('');
@@ -112,7 +143,14 @@ export default function App() {
   const [lobbyCountdownRemainingSec, setLobbyCountdownRemainingSec] = useState<
     number | null
   >(null);
+  const [sandboxUnlocked, setSandboxUnlocked] = useState<boolean>(() =>
+    isSecretSandboxUnlocked()
+  );
 
+  const logoTapRef = useRef<{ count: number; lastMs: number }>({
+    count: 0,
+    lastMs: 0,
+  });
   const leavingSelfRef = useRef(false);
   const kickedHandledRef = useRef(false);
   const membershipVerifyInFlightRef = useRef(false);
@@ -602,6 +640,31 @@ export default function App() {
   }, [room?.id, isMatchActive, lobbyCountdown?.startedAt, lobbyCountdown?.durationSec, clockOffsetMs]);
 
   useEffect(() => {
+    return subscribeSecretSandbox(setSandboxUnlocked);
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const isCombo =
+        (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === 'l') ||
+        (e.altKey && e.key.toLowerCase() === 't');
+      if (!isCombo) return;
+      e.preventDefault();
+      const next = !isSecretSandboxUnlocked();
+      setSecretSandboxUnlocked(next);
+      if (next) {
+        unlockRetroAudio();
+        playSecretUnlockChime();
+        setGlobalNotice('🧪 Modo Test Secreto activado (Solo · Sin DB).');
+      } else {
+        setGlobalNotice(null);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  useEffect(() => {
     return () => {
       if (countdownTimerRef.current) {
         window.clearTimeout(countdownTimerRef.current);
@@ -665,16 +728,24 @@ export default function App() {
     };
   }, [isMatchActive, room?.id]);
 
-  const handleCreateRoom = async () => {
+  const handleCreateRoom = async (presetRules?: RoomRules) => {
     setIsBusy(true);
     setJoinError(null);
     setGlobalNotice(null);
     leavingSelfRef.current = false;
     kickedHandledRef.current = false;
     try {
+      const initialRules = presetRules
+        ? {
+            ...structuredClone(presetRules),
+            matchState: null,
+            lobbyCountdown: null,
+            roomLocked: false,
+          }
+        : DEFAULT_RULES;
       const { room: createdRoom, player } = await createRoom(
         profile,
-        DEFAULT_RULES,
+        initialRules,
         playerId
       );
       setCachedPlayerId(player.id);
@@ -875,6 +946,10 @@ export default function App() {
 
         void startBackgroundKeepAlive();
 
+        const contractTargets = latestRoom.rules.modifiers?.contractHuntEnabled
+          ? assignInitialContracts(roles, activePlayers)
+          : {};
+
         const nextRules: RoomRules = {
           ...latestRoom.rules,
           lobbyCountdown: null,
@@ -886,8 +961,14 @@ export default function App() {
             activeZones,
             caught: {},
             infected: {},
+            contractTargets,
+            contractsCompletedBy: {},
+            activeDecoys: [],
+            activeCloaks: {},
+            abilityUses: {},
             rouletteDurationMs,
             seekerOrder,
+            initialSeekers: seekerOrder,
             hideTimeSec,
             extractionBeacon,
             winner: null,
@@ -1012,6 +1093,48 @@ export default function App() {
       const shouldSeekersWin =
         !baseMatch.winner && hadHiders && remainingHiders === 0;
 
+      const activeHidersList = activePlayers
+        .filter(
+          (p) =>
+            (nextRoles[p.id] ?? 'hider') === 'hider' && !nextCaught[p.id]
+        )
+        .map((p) => p.id);
+
+      const nextContractsCompletedBy = {
+        ...(baseMatch.contractsCompletedBy || {}),
+      };
+      if (
+        baseRules.modifiers?.contractHuntEnabled &&
+        isHunterCatch &&
+        baseMatch.contractTargets?.[byPlayerId] === targetPlayerId
+      ) {
+        nextContractsCompletedBy[byPlayerId] =
+          (nextContractsCompletedBy[byPlayerId] ?? 0) + 1;
+      }
+
+      const nextContractTargets: Record<string, string> = {
+        ...(baseMatch.contractTargets || {}),
+      };
+      if (baseRules.modifiers?.contractHuntEnabled) {
+        let rrIdx = 0;
+        Object.entries(nextRoles).forEach(([pid, r]) => {
+          if (r !== 'seeker' || nextCaught[pid]) {
+            delete nextContractTargets[pid];
+            return;
+          }
+          const curTarget = nextContractTargets[pid];
+          if (!curTarget || !activeHidersList.includes(curTarget)) {
+            if (activeHidersList.length > 0) {
+              nextContractTargets[pid] =
+                activeHidersList[rrIdx % activeHidersList.length];
+              rrIdx += 1;
+            } else {
+              delete nextContractTargets[pid];
+            }
+          }
+        });
+      }
+
       const nextRules: RoomRules = {
         ...baseRules,
         matchState: {
@@ -1019,6 +1142,8 @@ export default function App() {
           roles: nextRoles,
           caught: nextCaught,
           infected: nextInfected,
+          contractTargets: nextContractTargets,
+          contractsCompletedBy: nextContractsCompletedBy,
           ...(shouldSeekersWin
             ? {
                 winner: 'seekers' as MatchWinner,
@@ -1108,6 +1233,32 @@ export default function App() {
       const shouldClearAllCaughtWin =
         baseMatch.winner === 'seekers' && baseMatch.winReason === 'all_caught';
 
+      const activePlayers = latest?.players?.length ? latest.players : players;
+      const activeHidersList = activePlayers
+        .filter(
+          (p) =>
+            (nextRoles[p.id] ?? 'hider') === 'hider' && !nextCaught[p.id]
+        )
+        .map((p) => p.id);
+      const nextContractTargets: Record<string, string> = {
+        ...(baseMatch.contractTargets || {}),
+      };
+      if (baseRules.modifiers?.contractHuntEnabled && activeHidersList.length > 0) {
+        let rrIdx = 0;
+        Object.entries(nextRoles).forEach(([pid, r]) => {
+          if (r !== 'seeker' || nextCaught[pid]) {
+            delete nextContractTargets[pid];
+            return;
+          }
+          const curTarget = nextContractTargets[pid];
+          if (!curTarget || !activeHidersList.includes(curTarget)) {
+            nextContractTargets[pid] =
+              activeHidersList[rrIdx % activeHidersList.length];
+            rrIdx += 1;
+          }
+        });
+      }
+
       const nextRules: RoomRules = {
         ...baseRules,
         matchState: {
@@ -1115,6 +1266,7 @@ export default function App() {
           roles: nextRoles,
           caught: nextCaught,
           infected: nextInfected,
+          contractTargets: nextContractTargets,
           ...(shouldClearAllCaughtWin
             ? { winner: null, winReason: null, endedAt: null }
             : {}),
@@ -1129,6 +1281,68 @@ export default function App() {
           ? err.message
           : 'No se pudo deshacer el registro.'
       );
+    }
+  };
+
+  const handleActivateAbility = async (
+    kind: 'decoy' | 'cloak' | 'sonar' | 'scan',
+    coords?: { lat: number; lng: number },
+    actorPlayerId?: string
+  ): Promise<boolean> => {
+    if (!room) return false;
+    const actorId = actorPlayerId || playerId;
+    try {
+      const latest = await fetchRoomState(room.id);
+      const baseRules = latest?.room.rules ?? room.rules;
+      const baseMatch = baseRules.matchState;
+      if (!baseMatch?.active || baseMatch.winner) return false;
+      if (!(baseRules.modifiers?.abilitiesEnabled ?? true)) return false;
+
+      const maxUses = Math.max(1, baseRules.modifiers?.abilitiesPerPlayer ?? 2);
+      const prevUses = baseMatch.abilityUses?.[actorId] ?? 0;
+      if (prevUses >= maxUses) return false;
+
+      const nowMs = Date.now() + clockOffsetMs;
+      const nextUses = {
+        ...(baseMatch.abilityUses || {}),
+        [actorId]: prevUses + 1,
+      };
+
+      const activeDecoys = (baseMatch.activeDecoys || []).filter(
+        (d) => new Date(d.expiresAt).getTime() > nowMs
+      );
+      const nextCloaks = { ...(baseMatch.activeCloaks || {}) };
+
+      if (kind === 'decoy') {
+        if (!coords) return false;
+        const playerObj = (latest?.players || players).find(
+          (p) => p.id === actorId
+        );
+        activeDecoys.push({
+          id: `decoy_${actorId}_${Math.round(nowMs)}`,
+          ownerPlayerId: actorId,
+          label: playerObj?.name || 'Fugitivo',
+          lat: coords.lat,
+          lng: coords.lng,
+          expiresAt: new Date(nowMs + 25000).toISOString(),
+        });
+      } else if (kind === 'cloak') {
+        nextCloaks[actorId] = new Date(nowMs + 20000).toISOString();
+      }
+
+      const updated = await updateRoomRules(room.id, {
+        ...baseRules,
+        matchState: {
+          ...baseMatch,
+          abilityUses: nextUses,
+          activeDecoys,
+          activeCloaks: nextCloaks,
+        },
+      });
+      setRoom(updated);
+      return true;
+    } catch {
+      return false;
     }
   };
 
@@ -1274,6 +1488,263 @@ export default function App() {
         err instanceof Error
           ? err.message
           : 'No se pudo finalizar la partida.'
+      );
+    }
+  };
+
+  const handleAddBots = async (count: number) => {
+    if (!room) return;
+    try {
+      const nextPlayers = await addBotsToLocalRoom(room.id, count);
+      setPlayers(nextPlayers);
+    } catch (err) {
+      setGlobalNotice(
+        err instanceof Error ? err.message : 'No se pudieron añadir bots.'
+      );
+    }
+  };
+
+  const handleRemoveBots = async () => {
+    if (!room) return;
+    try {
+      const nextPlayers = await removeBotsFromLocalRoom(room.id);
+      setPlayers(nextPlayers);
+    } catch (err) {
+      setGlobalNotice(
+        err instanceof Error ? err.message : 'No se pudieron quitar los bots.'
+      );
+    }
+  };
+
+  const handleInstantStartMatch = async () => {
+    if (!room || players.length < 2 || isStartingMatch) return;
+    unlockRetroAudio();
+    setIsStartingMatch(true);
+    try {
+      const latest = await fetchRoomState(room.id);
+      const latestRoom = latest?.room ?? room;
+      const activePlayers = latest?.players?.length ? latest.players : players;
+
+      const roles: Record<string, PlayerRole> = {};
+      if (latestRoom.rules.roleAssignment === 'manual') {
+        const manual = latestRoom.rules.manualRoles || {};
+        activePlayers.forEach((p) => {
+          roles[p.id] = manual[p.id] === 'seeker' ? 'seeker' : 'hider';
+        });
+        if (!Object.values(roles).some((r) => r === 'seeker')) {
+          roles[activePlayers[0].id] = 'seeker';
+        }
+        if (!Object.values(roles).some((r) => r === 'hider')) {
+          roles[activePlayers[activePlayers.length - 1].id] = 'hider';
+        }
+      } else {
+        const ids = activePlayers.map((p) => p.id);
+        for (let i = ids.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [ids[i], ids[j]] = [ids[j], ids[i]];
+        }
+        const maxSeekers = Math.max(1, ids.length - 1);
+        const targetSeekers =
+          latestRoom.rules.seekersCount === 'random'
+            ? 1
+            : Math.max(1, Math.min(Number(latestRoom.rules.seekersCount) || 1, maxSeekers));
+        ids.forEach((id, idx) => {
+          roles[id] = idx < targetSeekers ? 'seeker' : 'hider';
+        });
+      }
+
+      const normalizedZones = normalizeZonesConfig(latestRoom.rules);
+      const first = normalizedZones.zones[0];
+      const activeZones =
+        normalizedZones.mode === 'random'
+          ? generateRandomZones({
+              anchorLat: first?.lat ?? VALENCIA_CENTER.lat,
+              anchorLng: first?.lng ?? VALENCIA_CENTER.lng,
+              count: normalizedZones.zones.length,
+              initialRadius: first?.radius ?? 900,
+              defaultWaitSec: first?.waitTimeSec ?? 90,
+              defaultShrinkSec: first?.shrinkTimeSec ?? 45,
+            })
+          : normalizedZones.zones;
+
+      const hideTimeSec = latestRoom.rules.hideTimeSec ?? 15;
+      const beaconVictoryEnabled = latestRoom.rules.beaconVictoryEnabled ?? true;
+      const beaconRadiusM = latestRoom.rules.modifiers?.beaconRadiusM ?? 25;
+      const extractionBeacon = beaconVictoryEnabled
+        ? generateExtractionBeacon(
+            activeZones,
+            latestRoom.rules.roundDuration || 8,
+            beaconRadiusM
+          )
+        : null;
+
+      const contractTargets = latestRoom.rules.modifiers?.contractHuntEnabled
+        ? assignInitialContracts(roles, activePlayers)
+        : {};
+
+      const nextRules: RoomRules = {
+        ...latestRoom.rules,
+        lobbyCountdown: null,
+        matchState: {
+          active: true,
+          startedAt: new Date().toISOString(),
+          roles,
+          activeZones,
+          caught: {},
+          infected: {},
+          contractTargets,
+          contractsCompletedBy: {},
+          activeDecoys: [],
+          activeCloaks: {},
+          abilityUses: {},
+          rouletteDurationMs: 0,
+          seekerOrder: activePlayers
+            .filter((p) => roles[p.id] === 'seeker')
+            .map((p) => p.id),
+          initialSeekers: activePlayers
+            .filter((p) => roles[p.id] === 'seeker')
+            .map((p) => p.id),
+          hideTimeSec,
+          extractionBeacon,
+          winner: null,
+          winReason: null,
+          endedAt: null,
+        },
+      };
+
+      const updated = await updateRoomRules(room.id, nextRules);
+      setRoom(updated);
+      setView('lobby');
+    } catch (err) {
+      setGlobalNotice(
+        err instanceof Error ? err.message : 'No se pudo iniciar al instante.'
+      );
+    } finally {
+      setIsStartingMatch(false);
+    }
+  };
+
+  const handleQuickStartSoloSandbox = async (infectionMode: boolean) => {
+    setIsBusy(true);
+    setJoinError(null);
+    setGlobalNotice(null);
+    leavingSelfRef.current = false;
+    kickedHandledRef.current = false;
+    setForceLocalSandboxEnabled(true);
+
+    try {
+      const sandboxRules: RoomRules = {
+        ...structuredClone(DEFAULT_RULES),
+        roundDuration: 8,
+        hideTimeSec: 8,
+        stormGraceSec: 25,
+        seekersCount: 1,
+        roleAssignment: 'manual',
+        requireLocationGuard: false,
+        modifiers: {
+          ...structuredClone(DEFAULT_RULES.modifiers),
+          infectionModeEnabled: infectionMode,
+          contractHuntEnabled: true,
+          abilitiesEnabled: true,
+          abilitiesPerPlayer: 3,
+          radarEnabled: true,
+          radarIntervalSec: 15,
+          radarRangeM: 400,
+          testJoystickEnabled: true,
+          testJoystickDefaultSpeed: 'run',
+        },
+      };
+
+      const { room: createdRoom, player } = await createRoom(
+        profile,
+        sandboxRules,
+        playerId
+      );
+      setCachedPlayerId(player.id);
+      setPlayerId(player.id);
+
+      const allPlayers = await addBotsToLocalRoom(createdRoom.id, 3);
+      const firstBot = allPlayers.find((p) => p.id !== player.id);
+
+      const roles: Record<string, PlayerRole> = {};
+      allPlayers.forEach((p) => {
+        roles[p.id] = p.id === firstBot?.id ? 'seeker' : 'hider';
+      });
+
+      const activeZones = normalizeZonesConfig(sandboxRules).zones;
+      const extractionBeacon = generateExtractionBeacon(
+        activeZones,
+        sandboxRules.roundDuration,
+        sandboxRules.modifiers.beaconRadiusM ?? 25
+      );
+      const contractTargets = assignInitialContracts(roles, allPlayers);
+
+      const launchedRules: RoomRules = {
+        ...sandboxRules,
+        manualRoles: roles,
+        matchState: {
+          active: true,
+          startedAt: new Date().toISOString(),
+          roles,
+          activeZones,
+          caught: {},
+          infected: {},
+          contractTargets,
+          contractsCompletedBy: {},
+          activeDecoys: [],
+          activeCloaks: {},
+          abilityUses: {},
+          rouletteDurationMs: 0,
+          seekerOrder: firstBot ? [firstBot.id] : [],
+          initialSeekers: firstBot ? [firstBot.id] : [],
+          hideTimeSec: sandboxRules.hideTimeSec,
+          extractionBeacon,
+          winner: null,
+          winReason: null,
+          endedAt: null,
+        },
+      };
+
+      const updated = await updateRoomRules(createdRoom.id, launchedRules);
+      setRoom(updated);
+      setPlayers(allPlayers);
+      saveActiveSession({
+        roomId: createdRoom.id,
+        roomCode: createdRoom.code,
+        playerId: player.id,
+      });
+      setView('lobby');
+    } catch (err) {
+      setGlobalNotice(
+        err instanceof Error
+          ? err.message
+          : 'No se pudo iniciar la sala de pruebas.'
+      );
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const handleSandboxUpdateMatchState = async (
+    updater: (prevMatch: MatchState, baseRules: RoomRules) => MatchState
+  ) => {
+    if (!room) return;
+    try {
+      const latest = await fetchRoomState(room.id);
+      const baseRules = latest?.room.rules ?? room.rules;
+      const baseMatch = baseRules.matchState;
+      if (!baseMatch?.active) return;
+      const nextMatch = updater(baseMatch, baseRules);
+      const updated = await updateRoomRules(room.id, {
+        ...baseRules,
+        matchState: nextMatch,
+      });
+      setRoom(updated);
+    } catch (err) {
+      setGlobalNotice(
+        err instanceof Error
+          ? err.message
+          : 'No se pudo actualizar el estado sandbox.'
       );
     }
   };
@@ -1427,8 +1898,11 @@ export default function App() {
           onSetPhotoChallengeStatus={handleSetPhotoChallengeStatus}
           onEliminatePhotoTimeouts={handleEliminatePhotoTimeouts}
           onDeclareWinner={handleDeclareWinner}
+          onActivateAbility={handleActivateAbility}
           onEndMatch={handleEndMatch}
           onLeaveRoom={handleLeaveRoom}
+          sandboxUnlocked={sandboxUnlocked}
+          onSandboxUpdateMatchState={handleSandboxUpdateMatchState}
         />
         <OfflineIndicator />
         {kickedInfo && (
@@ -1444,28 +1918,51 @@ export default function App() {
     );
   }
 
+  const handleHeaderBrandClick = () => {
+    const now = Date.now();
+    if (now - logoTapRef.current.lastMs > 2200) {
+      logoTapRef.current.count = 0;
+    }
+    logoTapRef.current.count += 1;
+    logoTapRef.current.lastMs = now;
+
+    if (logoTapRef.current.count >= 5) {
+      logoTapRef.current.count = 0;
+      const next = !isSecretSandboxUnlocked();
+      setSecretSandboxUnlocked(next);
+      if (next) {
+        unlockRetroAudio();
+        playSecretUnlockChime();
+        setGlobalNotice('🧪 Modo Test Secreto activado (Solo · Sin DB).');
+      } else {
+        setGlobalNotice(null);
+      }
+      return;
+    }
+
+    setShowSettings(false);
+    if (room) {
+      setView('lobby');
+    } else {
+      setView('home');
+    }
+  };
+
   return (
     <div className="min-h-screen bg-[#F8FAFC] text-slate-900 flex flex-col">
       {/* Cabecera limpia de 1 sola línea */}
       <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur-md">
-        <div className="mx-auto flex h-14 max-w-5xl items-center justify-between gap-4 px-4 sm:px-6">
+        <div className="mx-auto flex h-13 max-w-5xl items-center justify-between gap-2 px-3 sm:px-6">
           <button
             type="button"
-            onClick={() => {
-              setShowSettings(false);
-              if (room) {
-                setView('lobby');
-              } else {
-                setView('home');
-              }
-            }}
-            className="inline-flex items-center gap-2 font-display text-xl font-bold tracking-tight text-slate-900 whitespace-nowrap shrink-0"
+            onClick={handleHeaderBrandClick}
+            className="inline-flex items-center gap-2 font-display text-lg sm:text-xl font-bold tracking-tight text-slate-900 whitespace-nowrap shrink-0"
           >
             <PixelBalizaMark className="h-6 w-6 shrink-0" />
             <span>Baliza</span>
           </button>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             <div
               role="tablist"
               aria-label="Navegación principal"
@@ -1476,7 +1973,7 @@ export default function App() {
                 role="tab"
                 aria-selected={!showSettings}
                 onClick={() => setShowSettings(false)}
-                className={`inline-flex min-h-[34px] items-center rounded-lg px-3 py-1 text-xs font-semibold transition-colors whitespace-nowrap ${
+                className={`inline-flex min-h-[32px] items-center rounded-lg px-2.5 sm:px-3 py-1 text-xs font-semibold transition-colors whitespace-nowrap ${
                   !showSettings
                     ? 'bg-white text-slate-900 shadow-xs'
                     : 'text-slate-600 hover:text-slate-900'
@@ -1489,24 +1986,26 @@ export default function App() {
                 role="tab"
                 aria-selected={showSettings}
                 onClick={() => setShowSettings(true)}
-                className={`inline-flex min-h-[34px] items-center gap-1.5 rounded-lg px-3 py-1 text-xs font-semibold transition-colors whitespace-nowrap ${
+                className={`inline-flex min-h-[32px] items-center gap-1 rounded-lg px-2.5 sm:px-3 py-1 text-xs font-semibold transition-colors whitespace-nowrap ${
                   showSettings
                     ? 'bg-white text-slate-900 shadow-xs'
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
                 <Settings className="h-3.5 w-3.5" aria-hidden="true" />
-                <span>Configuración</span>
+                <span>Ajustes</span>
               </button>
             </div>
+
+            <ShareAppButton variant="header" />
 
             {!showSettings && room && view === 'host_rules' ? (
               <button
                 type="button"
                 onClick={() => setView('lobby')}
-                className="inline-flex min-h-[38px] items-center rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs sm:text-sm font-semibold text-slate-700 hover:bg-slate-50 whitespace-nowrap"
+                className="inline-flex min-h-[36px] items-center rounded-xl border border-slate-200 bg-white px-2.5 sm:px-3 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50 whitespace-nowrap"
               >
-                Volver a la sala
+                Volver a sala
               </button>
             ) : (
               <PWAInstallButton />
@@ -1539,6 +2038,7 @@ export default function App() {
             profile={profile}
             onProfileChange={handleSettingsProfileChange}
             isInRoom={Boolean(room)}
+            onOpenAchievements={() => setShowAchievements(true)}
           />
         ) : (
           <>
@@ -1552,6 +2052,9 @@ export default function App() {
                 isBusy={isBusy}
                 joinError={joinError}
                 onClearJoinError={() => setJoinError(null)}
+                sandboxUnlocked={sandboxUnlocked}
+                onQuickStartSoloSandbox={handleQuickStartSoloSandbox}
+                onOpenAchievements={() => setShowAchievements(true)}
               />
             )}
 
@@ -1588,6 +2091,10 @@ export default function App() {
                 isStartingMatch={isStartingMatch}
                 countdownRemainingSec={lobbyCountdownRemainingSec}
                 onLeaveRoom={handleLeaveRoom}
+                sandboxUnlocked={sandboxUnlocked}
+                onAddBots={handleAddBots}
+                onRemoveBots={handleRemoveBots}
+                onInstantStartMatch={handleInstantStartMatch}
               />
             )}
           </>
@@ -1611,6 +2118,9 @@ export default function App() {
           roomCode={kickedInfo.roomCode}
           onClose={() => setKickedInfo(null)}
         />
+      )}
+      {showAchievements && (
+        <AchievementsModal onClose={() => setShowAchievements(false)} />
       )}
     </div>
   );

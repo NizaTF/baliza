@@ -20,6 +20,15 @@ import {
   supabase,
   supabaseCredentials,
 } from './supabaseClient';
+import {
+  createBotPlayers,
+  isBotPlayerId,
+  isForceLocalSandboxEnabled,
+} from './soloSandbox';
+
+function shouldUseRemoteDb(): boolean {
+  return Boolean(isSupabaseConfigured && supabase && !isForceLocalSandboxEnabled());
+}
 
 const LOCAL_ROOMS_KEY = 'escondite_urbano_local_rooms_v1';
 const CHANNEL_NAME = 'escondite_urbano_sync_v1';
@@ -79,7 +88,7 @@ function broadcastLocalSync(message: SyncMessage): void {
 }
 
 export function getSyncMode(): 'supabase' | 'local' {
-  return isSupabaseConfigured && supabase ? 'supabase' : 'local';
+  return shouldUseRemoteDb() ? 'supabase' : 'local';
 }
 
 export async function createRoom(
@@ -92,7 +101,7 @@ export async function createRoom(
   const cleanEmoji = sanitizePlayerEmoji(profile.emoji);
   const cleanColor = sanitizeHexColor(profile.color);
 
-  if (isSupabaseConfigured && supabase) {
+  if (shouldUseRemoteDb() && supabase) {
     // Intentar hasta 5 veces generar un código único
     for (let attempt = 0; attempt < 5; attempt++) {
       const code = generateRoomCode(4);
@@ -209,7 +218,7 @@ export async function joinRoom(
     throw new Error('No encontramos esa sala. Revisa el código.');
   }
 
-  if (isSupabaseConfigured && supabase) {
+  if (shouldUseRemoteDb() && supabase) {
     const { data: roomData, error: roomError } = await supabase
       .from('rooms')
       .select('*')
@@ -341,7 +350,7 @@ export async function joinRoom(
 export async function fetchRoomState(
   roomId: string
 ): Promise<{ room: RoomRecord; players: PlayerRecord[] } | null> {
-  if (isSupabaseConfigured && supabase) {
+  if (shouldUseRemoteDb() && supabase) {
     const { data: roomData, error: roomError } = await supabase
       .from('rooms')
       .select('*')
@@ -380,7 +389,7 @@ export async function verifyPlayerInRoom(
   roomId: string,
   playerId: string
 ): Promise<'present' | 'missing' | 'unknown'> {
-  if (isSupabaseConfigured && supabase) {
+  if (shouldUseRemoteDb() && supabase) {
     try {
       const { data: roomData, error: roomErr } = await supabase
         .from('rooms')
@@ -415,7 +424,7 @@ export async function updateRoomRules(
   roomId: string,
   rules: RoomRules
 ): Promise<RoomRecord> {
-  if (isSupabaseConfigured && supabase) {
+  if (shouldUseRemoteDb() && supabase) {
     const { data, error } = await supabase
       .from('rooms')
       .update({ rules })
@@ -446,7 +455,7 @@ export async function updatePlayerProfileInRoom(
   const cleanEmoji = sanitizePlayerEmoji(profile.emoji);
   const cleanColor = sanitizeHexColor(profile.color);
 
-  if (isSupabaseConfigured && supabase) {
+  if (shouldUseRemoteDb() && supabase) {
     const { error } = await supabase
       .from('players')
       .update({
@@ -481,7 +490,7 @@ export async function kickPlayer(
   roomId: string,
   targetPlayerId: string
 ): Promise<void> {
-  if (isSupabaseConfigured && supabase) {
+  if (shouldUseRemoteDb() && supabase) {
     // Emitir evento broadcast inmediato para expulsar al instante sin esperar al refresco SQL
     const liveChannel = activeSyncChannels.get(roomId);
     if (liveChannel) {
@@ -514,7 +523,7 @@ export async function transferHost(
   currentHostId: string,
   nextHostId: string
 ): Promise<void> {
-  if (isSupabaseConfigured && supabase) {
+  if (shouldUseRemoteDb() && supabase) {
     const { error: roomErr } = await supabase
       .from('rooms')
       .update({ host_id: nextHostId })
@@ -553,7 +562,7 @@ export async function leaveRoom(
   playerId: string,
   isHost: boolean
 ): Promise<void> {
-  if (isSupabaseConfigured && supabase) {
+  if (shouldUseRemoteDb() && supabase) {
     if (isHost) {
       await supabase.from('rooms').delete().eq('id', roomId);
     } else {
@@ -582,7 +591,7 @@ export function leaveRoomOnUnload(
   playerId: string,
   isHost: boolean
 ): void {
-  if (isSupabaseConfigured && supabaseCredentials) {
+  if (!isForceLocalSandboxEnabled() && isSupabaseConfigured && supabaseCredentials) {
     const { url, anonKey } = supabaseCredentials;
     const endpoint = isHost
       ? `${url}/rest/v1/rooms?id=eq.${encodeURIComponent(roomId)}`
@@ -626,7 +635,7 @@ export function subscribeToRoom(
     onPlayerKicked?: (targetPlayerId: string) => void;
   }
 ): () => void {
-  if (isSupabaseConfigured && supabase) {
+  if (shouldUseRemoteDb() && supabase) {
     const client = supabase;
     const channel = client
       .channel(`room-sync-${roomId}`, {
@@ -739,7 +748,7 @@ export function subscribeToMatchLocations(
   sendLocation: (payload: PlayerLocationPayload) => void;
   unsubscribe: () => void;
 } {
-  if (isSupabaseConfigured && supabase) {
+  if (shouldUseRemoteDb() && supabase) {
     const client = supabase;
     let isSubscribed = false;
     const channel = client.channel(`room-loc-${roomId}`, {
@@ -859,7 +868,7 @@ export function subscribeToRoomClockSync(
     }
   };
 
-  if (isSupabaseConfigured && supabase) {
+  if (shouldUseRemoteDb() && supabase) {
     const client = supabase;
     let isSubscribed = false;
     const timers: number[] = [];
@@ -1001,7 +1010,7 @@ export function subscribeToRoomLocationGuard(
   let disposed = false;
   let currentStatus = initialStatus;
 
-  if (isSupabaseConfigured && supabase) {
+  if (shouldUseRemoteDb() && supabase) {
     const client = supabase;
     let isSubscribed = false;
     const channel = client.channel(`room-loc-guard-${roomId}`, {
@@ -1103,7 +1112,7 @@ export function subscribeToPhotoProofs(
   sendProof: (payload: PhotoProofPayload) => void;
   unsubscribe: () => void;
 } {
-  if (isSupabaseConfigured && supabase) {
+  if (shouldUseRemoteDb() && supabase) {
     const client = supabase;
     let isSubscribed = false;
     const channel = client.channel(`room-photo-${roomId}`, {
@@ -1154,5 +1163,41 @@ export function subscribeToPhotoProofs(
       localChannel?.close();
     },
   };
+}
+
+export async function addBotsToLocalRoom(
+  roomId: string,
+  count = 1
+): Promise<PlayerRecord[]> {
+  const store = readLocalStore();
+  const room = store.rooms[roomId];
+  if (!room) throw new Error('Sala local no encontrada.');
+
+  const current = store.players[roomId] || [];
+  const availableSlots = Math.max(0, 20 - current.length);
+  const toAdd = Math.min(count, availableSlots);
+  if (toAdd <= 0) return current;
+
+  const bots = createBotPlayers(toAdd, current, roomId);
+  const next = [...current, ...bots];
+  store.players[roomId] = next;
+  writeLocalStore(store);
+  broadcastLocalSync({ type: 'room_updated', roomId });
+  return next;
+}
+
+export async function removeBotsFromLocalRoom(
+  roomId: string
+): Promise<PlayerRecord[]> {
+  const store = readLocalStore();
+  const room = store.rooms[roomId];
+  if (!room) return [];
+
+  const current = store.players[roomId] || [];
+  const next = current.filter((p) => !isBotPlayerId(p.id));
+  store.players[roomId] = next;
+  writeLocalStore(store);
+  broadcastLocalSync({ type: 'room_updated', roomId });
+  return next;
 }
 

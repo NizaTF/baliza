@@ -11,6 +11,8 @@ import {
   Volume2,
   X,
 } from 'lucide-react';
+import { AchievementDef, recordMatchOutcome } from '../lib/achievements';
+import { didPlayerWinMatch } from '../lib/matchOutcome';
 import { playMatchResultTheme, unlockRetroAudio } from '../lib/retroAudio';
 import {
   CaughtRecord,
@@ -31,10 +33,14 @@ interface MatchResultOverlayProps {
   winReason: MatchWinReason;
   myRole: PlayerRole;
   isHost: boolean;
+  currentPlayerId?: string;
+  matchKey?: string;
+  contractsCompletedBy?: Record<string, number>;
   players: PlayerRecord[];
   roles: Record<string, PlayerRole>;
   caughtMap: Record<string, CaughtRecord>;
   infectedMap?: Record<string, InfectedRecord>;
+  initialSeekers?: string[];
   infectionModeEnabled?: boolean;
   extractionBeacon?: ExtractionBeacon | null;
   recapRoutes?: Record<string, PlayerRecapRoute>;
@@ -137,10 +143,14 @@ export const MatchResultOverlay: React.FC<MatchResultOverlayProps> = ({
   winReason,
   myRole,
   isHost,
+  currentPlayerId,
+  matchKey = '',
+  contractsCompletedBy = {},
   players,
   roles,
   caughtMap,
   infectedMap = {},
+  initialSeekers = [],
   infectionModeEnabled = false,
   extractionBeacon,
   recapRoutes = {},
@@ -153,11 +163,67 @@ export const MatchResultOverlay: React.FC<MatchResultOverlayProps> = ({
   const [summaryTab, setSummaryTab] = useState<'scoreboard' | 'recap'>('scoreboard');
   const [audioBlocked, setAudioBlocked] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [unlockedAchievements, setUnlockedAchievements] = useState<AchievementDef[]>([]);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const recordedOutcomeRef = useRef(false);
 
-  const didIWin =
-    (winner === 'hiders' && myRole === 'hider') ||
-    (winner === 'seekers' && myRole === 'seeker');
+  const effectiveInitialSeekers = useMemo(() => {
+    if (initialSeekers.length > 0) return initialSeekers;
+    return Object.entries(roles)
+      .filter(([id, r]) => r === 'seeker' && !infectedMap[id])
+      .map(([id]) => id);
+  }, [initialSeekers, roles, infectedMap]);
+
+  const didIWin = didPlayerWinMatch({
+    winner,
+    myRole,
+    currentPlayerId,
+    infectionModeEnabled,
+    infectedMap,
+    initialSeekers: effectiveInitialSeekers,
+    roles,
+  });
+
+  useEffect(() => {
+    if (recordedOutcomeRef.current || !currentPlayerId) return;
+    recordedOutcomeRef.current = true;
+    const catchesByMe = Object.values(caughtMap).filter(
+      (c) => c.byPlayerId === currentPlayerId
+    ).length;
+    const infectionsByMe = Object.values(infectedMap).filter(
+      (i) => i.byPlayerId === currentPlayerId
+    ).length;
+    const metersWalked = recapRoutes[currentPlayerId]?.totalMeters ?? 0;
+    const activatedBeaconByMe =
+      extractionBeacon?.activatedByPlayerId === currentPlayerId;
+    const contractsCompletedByMe = contractsCompletedBy[currentPlayerId] ?? 0;
+
+    const { newlyUnlocked } = recordMatchOutcome({
+      matchKey: matchKey || `${players.length}-${Math.round(matchDurationSec)}`,
+      didWin: didIWin,
+      myRole,
+      metersWalked,
+      catchesByMe,
+      infectionsByMe,
+      activatedBeaconByMe,
+      contractsCompletedByMe,
+    });
+    if (newlyUnlocked.length > 0) {
+      setUnlockedAchievements(newlyUnlocked);
+    }
+  }, [
+    currentPlayerId,
+    matchKey,
+    didIWin,
+    myRole,
+    caughtMap,
+    infectedMap,
+    recapRoutes,
+    extractionBeacon,
+    contractsCompletedBy,
+    players.length,
+    matchDurationSec,
+  ]);
 
   const bannerWord = useMemo(
     () => buildWordRects(didIWin ? 'VICTORIA' : 'DERROTA'),
@@ -487,16 +553,31 @@ export const MatchResultOverlay: React.FC<MatchResultOverlayProps> = ({
     ? players.find((p) => p.id === extractionBeacon.activatedByPlayerId)?.name
     : undefined;
 
+  const originalWinners = useMemo(
+    () =>
+      players.filter(
+        (p) => effectiveInitialSeekers.includes(p.id) && !infectedMap[p.id]
+      ),
+    [players, effectiveInitialSeekers, infectedMap]
+  );
+
   const reasonText =
     winReason === 'all_caught'
       ? infectionModeEnabled
-        ? 'Todos los fugitivos han sido infectados o eliminados.'
+        ? 'Todos han sido infectados. Solo gana quien empezó infectado; los infectados pierden.'
         : 'Todos los fugitivos han sido eliminados.'
       : winReason === 'beacon_extracted'
       ? activatorName
         ? `${activatorName} activó la Baliza de Extracción.`
         : 'Los fugitivos activaron la Baliza de Extracción.'
       : 'Los fugitivos sobrevivieron hasta agotarse el tiempo de ronda.';
+
+  const infectionHeadline =
+    infectionModeEnabled && winner === 'seekers'
+      ? originalWinners.length === 1
+        ? `¡Gana ${originalWinners[0].name} (Infectado inicial)!`
+        : '¡Ganan los Infectados Iniciales!'
+      : null;
 
   const hiders = players.filter((p) => (roles[p.id] ?? 'hider') === 'hider');
   const seekers = players.filter((p) => (roles[p.id] ?? 'hider') === 'seeker');
@@ -512,7 +593,11 @@ export const MatchResultOverlay: React.FC<MatchResultOverlayProps> = ({
 
   if (phase === 'cinematic') {
     const winningTeamLabel =
-      winner === 'hiders' ? '¡GANAN LOS FUGITIVOS!' : '¡GANAN LOS BUSCADORES!';
+      winner === 'hiders'
+        ? '¡GANAN LOS FUGITIVOS!'
+        : infectionHeadline
+        ? infectionHeadline.toUpperCase()
+        : '¡GANAN LOS BUSCADORES!';
     const tapeLabel = didIWin
       ? '· CLASE BALIZA · ¡CONTRAATAQUE! · BALA DE LA VERDAD · VICTORIA ·'
       : '· VEREDICTO DEL JUICIO · CASO CERRADO · DERROTA ·';
@@ -709,7 +794,7 @@ export const MatchResultOverlay: React.FC<MatchResultOverlayProps> = ({
               <h2 className="font-display text-xl font-bold tracking-tight text-slate-900">
                 {winner === 'hiders'
                   ? '¡Ganan los Fugitivos!'
-                  : '¡Ganan los Buscadores!'}
+                  : infectionHeadline ?? '¡Ganan los Buscadores!'}
               </h2>
             </div>
           </div>
@@ -792,6 +877,25 @@ export const MatchResultOverlay: React.FC<MatchResultOverlayProps> = ({
                 <span>{reasonText}</span>
               </div>
 
+              {unlockedAchievements.length > 0 && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50/80 px-3.5 py-2.5 space-y-1">
+                  <p className="text-[11px] font-bold uppercase tracking-wider text-amber-800">
+                    🏆 Logros desbloqueados
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    {unlockedAchievements.map((ach) => (
+                      <span
+                        key={ach.id}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-white px-2.5 py-1 text-xs font-semibold text-slate-900 shadow-xs"
+                      >
+                        <span aria-hidden="true">{ach.icon}</span>
+                        <span>{ach.title}</span>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* Resumen por equipos */}
               <div className="space-y-4 max-h-[38vh] overflow-y-auto pr-1">
                 <div>
@@ -866,6 +970,11 @@ export const MatchResultOverlay: React.FC<MatchResultOverlayProps> = ({
                           (c) => c.byPlayerId === p.id
                         ).length;
                       const wasInfected = Boolean(infectedMap[p.id]);
+                      const isOriginalWinner =
+                        infectionModeEnabled &&
+                        winner === 'seekers' &&
+                        !wasInfected &&
+                        effectiveInitialSeekers.includes(p.id);
                       return (
                         <li
                           key={p.id}
@@ -884,7 +993,14 @@ export const MatchResultOverlay: React.FC<MatchResultOverlayProps> = ({
                               </span>
                               {wasInfected && (
                                 <span className="block text-[11px] font-medium text-rose-600">
-                                  Infectado
+                                  {infectionModeEnabled && winner === 'seekers'
+                                    ? 'Infectado · Pierde'
+                                    : 'Infectado'}
+                                </span>
+                              )}
+                              {isOriginalWinner && (
+                                <span className="block text-[11px] font-semibold text-emerald-700">
+                                  Infectado inicial · ¡Gana!
                                 </span>
                               )}
                             </div>

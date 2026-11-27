@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Check, ChevronDown, Palette, Plus, Shuffle, Smile } from 'lucide-react';
+import { Check, Palette, Plus, Shuffle } from 'lucide-react';
 import {
   extractEmojiGraphemes,
   sanitizeHexColor,
@@ -63,7 +63,6 @@ export const ProfileCustomizer: React.FC<ProfileCustomizerProps> = ({
     setEmojiDraft(rawValue);
     const graphemes = extractEmojiGraphemes(rawValue);
     if (graphemes.length === 0) return;
-    // Si escribió o pegó un emoji nuevo junto al anterior, quedarse con el último introducido
     const chosen =
       graphemes.length > 1 && graphemes[0] === safeEmoji
         ? graphemes[graphemes.length - 1]
@@ -103,27 +102,27 @@ export const ProfileCustomizer: React.FC<ProfileCustomizerProps> = ({
         <div className="flex items-center justify-between gap-2">
           <label
             htmlFor="player-name-input"
-            className="block text-sm font-semibold text-slate-900"
+            className="text-sm font-semibold text-slate-900"
           >
             Tu nombre
           </label>
           <button
             type="button"
             onClick={() => setShowPicker((v) => !v)}
-            className="text-xs font-semibold text-emerald-700 hover:underline"
+            className="min-h-[32px] text-xs font-semibold text-emerald-700 hover:underline whitespace-nowrap"
           >
-            {showPicker ? 'Ocultar icono y color' : 'Cambiar emoji y color'}
+            {showPicker ? 'Cerrar estilo' : 'Personalizar avatar'}
           </button>
         </div>
 
-        <div className="mt-1.5 flex items-center gap-2.5">
+        <div className="mt-1.5 flex items-center gap-3">
           <button
             type="button"
             onClick={() => setShowPicker((v) => !v)}
             aria-expanded={showPicker}
             aria-label="Cambiar icono y color"
-            title="Cambiar icono y color"
-            className="group relative flex items-center gap-1 rounded-full p-0.5 transition-transform active:scale-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-600"
+            title="Toca para elegir icono y color"
+            className="shrink-0 rounded-full p-0.5 transition-transform active:scale-95 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-600"
           >
             <PlayerAvatar
               emoji={safeEmoji}
@@ -131,14 +130,6 @@ export const ProfileCustomizer: React.FC<ProfileCustomizerProps> = ({
               size="md"
               name={profile.name || 'Jugador'}
             />
-            <span className="flex h-6 w-6 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 group-hover:text-slate-800">
-              <ChevronDown
-                className={`h-3.5 w-3.5 transition-transform ${
-                  showPicker ? 'rotate-180' : ''
-                }`}
-                aria-hidden="true"
-              />
-            </span>
           </button>
 
           <input
@@ -146,12 +137,12 @@ export const ProfileCustomizer: React.FC<ProfileCustomizerProps> = ({
             type="text"
             maxLength={12}
             autoComplete="nickname"
-            placeholder="Escribe tu nombre..."
+            placeholder="¿Cómo te llamas?"
             value={profile.name}
             onChange={(e) =>
               onChange({ ...profile, name: e.target.value.slice(0, 12) })
             }
-            className={`h-11 w-full flex-1 rounded-xl border bg-white px-3.5 text-base font-semibold text-slate-900 placeholder:font-normal placeholder:text-slate-400 focus:outline-none focus:ring-2 ${
+            className={`h-12 w-full flex-1 rounded-xl border bg-white px-4 text-base font-semibold text-slate-900 placeholder:font-normal placeholder:text-slate-400 focus:outline-none focus:ring-2 ${
               nameError
                 ? 'border-rose-500 focus:ring-rose-500/20'
                 : 'border-slate-300 focus:border-emerald-600 focus:ring-emerald-600/20'
@@ -167,22 +158,36 @@ export const ProfileCustomizer: React.FC<ProfileCustomizerProps> = ({
       </div>
 
       {showPicker && (
-        <div className="space-y-3.5 rounded-xl border border-slate-200 bg-slate-50/80 p-3.5">
-          {/* Cualquier emoji con selector nativo del sistema / teclado */}
+        <div className="space-y-3.5 border-t border-slate-100 pt-3.5">
+          {/* Emoji */}
           <div className="space-y-2">
             <div className="flex items-center justify-between gap-2">
-              <span className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-500">
-                <Smile className="h-3.5 w-3.5" aria-hidden="true" />
-                <span>Emoji (teclado nativo o lista)</span>
+              <span className="text-xs font-medium text-slate-500">
+                Icono o emoji propio
               </span>
-              <button
-                type="button"
-                onClick={handleRandomEmoji}
-                className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-100"
-              >
-                <Shuffle className="h-3 w-3" aria-hidden="true" />
-                <span>Aleatorio</span>
-              </button>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={handleRandomEmoji}
+                  className="inline-flex min-h-[32px] items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                >
+                  <Shuffle className="h-3 w-3" aria-hidden="true" />
+                  <span>Azar</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowMoreEmojis((v) => !v)}
+                  className="inline-flex min-h-[32px] items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                >
+                  <Plus
+                    className={`h-3 w-3 transition-transform ${
+                      showMoreEmojis ? 'rotate-45' : ''
+                    }`}
+                    aria-hidden="true"
+                  />
+                  <span>{showMoreEmojis ? 'Menos' : 'Más'}</span>
+                </button>
+              </div>
             </div>
 
             <div className="flex items-center gap-2">
@@ -193,51 +198,25 @@ export const ProfileCustomizer: React.FC<ProfileCustomizerProps> = ({
                   autoComplete="off"
                   spellCheck={false}
                   enterKeyHint="done"
-                  aria-label="Selector nativo de emoji: escribe o pega cualquier emoji"
-                  title="Abre el selector de emojis de tu dispositivo (teclado móvil, Win + . en Windows o Ctrl + Cmd + Espacio en Mac)"
-                  placeholder="Toca y elige cualquier emoji..."
+                  aria-label="Escribe o pega cualquier emoji"
+                  placeholder="O escribe cualquier emoji de tu teclado..."
                   value={emojiDraft}
                   onFocus={(e) => e.currentTarget.select()}
                   onBlur={() => setEmojiDraft(safeEmoji)}
                   onChange={(e) => handleCustomEmojiChange(e.target.value)}
-                  className="h-10 w-full rounded-xl border border-slate-300 bg-white pl-3 pr-10 text-base font-medium text-slate-900 placeholder:text-xs placeholder:text-slate-400 focus:border-emerald-600 focus:outline-none"
+                  className="h-10 w-full rounded-xl border border-slate-200 bg-slate-50 pl-3 pr-10 text-sm font-medium text-slate-900 placeholder:text-xs placeholder:text-slate-400 focus:border-emerald-600 focus:bg-white focus:outline-none"
                 />
                 <span
                   aria-hidden="true"
-                  className="pointer-events-none absolute right-2.5 text-lg leading-none"
+                  className="pointer-events-none absolute right-3 text-lg leading-none"
                 >
                   {safeEmoji}
                 </span>
               </div>
-              <button
-                type="button"
-                onClick={() => setShowMoreEmojis((v) => !v)}
-                className="inline-flex h-10 shrink-0 items-center gap-1 rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-100"
-              >
-                <Plus
-                  className={`h-3.5 w-3.5 transition-transform ${
-                    showMoreEmojis ? 'rotate-45' : ''
-                  }`}
-                  aria-hidden="true"
-                />
-                <span>{showMoreEmojis ? 'Menos' : 'Más'}</span>
-              </button>
             </div>
 
-            <p className="text-[11px] text-slate-500">
-              En móvil toca la tecla de emojis; en PC pulsa{' '}
-              <kbd className="rounded border border-slate-200 bg-white px-1 py-0.5 font-mono text-[10px]">
-                Win + .
-              </kbd>{' '}
-              o{' '}
-              <kbd className="rounded border border-slate-200 bg-white px-1 py-0.5 font-mono text-[10px]">
-                Ctrl + ⌘ + Espacio
-              </kbd>
-              .
-            </p>
-
             <div
-              className="grid max-h-44 grid-cols-7 gap-1.5 overflow-y-auto pr-0.5 sm:grid-cols-8"
+              className="grid max-h-40 grid-cols-7 gap-1.5 overflow-y-auto sm:grid-cols-8"
               role="radiogroup"
               aria-label="Icono de jugador"
             >
@@ -251,10 +230,10 @@ export const ProfileCustomizer: React.FC<ProfileCustomizerProps> = ({
                     aria-checked={selected}
                     aria-label={`Icono ${emoji}`}
                     onClick={() => onChange({ ...profile, emoji })}
-                    className={`flex h-9 items-center justify-center rounded-lg text-lg transition-colors ${
+                    className={`flex h-10 items-center justify-center rounded-xl text-lg transition-colors ${
                       selected
                         ? 'bg-emerald-600/15 ring-2 ring-emerald-600'
-                        : 'bg-white hover:bg-slate-100 border border-slate-200'
+                        : 'bg-slate-50 hover:bg-slate-100'
                     }`}
                   >
                     {emoji}
@@ -264,21 +243,14 @@ export const ProfileCustomizer: React.FC<ProfileCustomizerProps> = ({
             </div>
           </div>
 
-          {/* Cualquier color con selector nativo <input type="color"> */}
-          <div className="space-y-2 border-t border-slate-200 pt-3">
+          {/* Color */}
+          <div className="space-y-2 border-t border-slate-100 pt-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <span className="text-xs font-medium text-slate-500">
-                Color del identificador
-              </span>
+              <span className="text-xs font-medium text-slate-500">Color</span>
               <div className="flex items-center gap-1.5">
-                <label className="relative flex h-8 cursor-pointer items-center gap-1.5 overflow-hidden rounded-lg border border-slate-200 bg-white px-2.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-100">
-                  <span
-                    className="h-3.5 w-3.5 shrink-0 rounded-full border border-black/15"
-                    style={{ backgroundColor: safeColor }}
-                    aria-hidden="true"
-                  />
+                <label className="relative flex h-8 cursor-pointer items-center gap-1.5 overflow-hidden rounded-lg border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50">
                   <Palette className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                  <span>Color libre</span>
+                  <span>Otro</span>
                   <input
                     type="color"
                     aria-label="Selector libre de color"
@@ -299,7 +271,7 @@ export const ProfileCustomizer: React.FC<ProfileCustomizerProps> = ({
                   value={hexDraft}
                   onChange={(e) => handleHexInputChange(e.target.value)}
                   onBlur={() => setHexDraft(safeColor)}
-                  className="h-8 w-[76px] rounded-lg border border-slate-200 bg-white px-2 text-center font-mono text-[11px] font-semibold uppercase text-slate-700 focus:border-emerald-600 focus:outline-none"
+                  className="h-8 w-[76px] rounded-lg border border-slate-200 bg-slate-50 px-2 text-center font-mono text-[11px] font-semibold uppercase text-slate-700 focus:border-emerald-600 focus:outline-none"
                 />
               </div>
             </div>
@@ -319,7 +291,7 @@ export const ProfileCustomizer: React.FC<ProfileCustomizerProps> = ({
                     aria-checked={selected}
                     aria-label={`Color ${accent.label}`}
                     onClick={() => onChange({ ...profile, color: accent.hex })}
-                    className={`flex h-8 w-8 items-center justify-center rounded-full transition-transform active:scale-95 ${
+                    className={`flex h-9 w-9 items-center justify-center rounded-full transition-transform active:scale-95 ${
                       selected ? 'ring-2 ring-slate-900 ring-offset-2' : ''
                     }`}
                     style={{ backgroundColor: accent.hex }}
@@ -331,10 +303,9 @@ export const ProfileCustomizer: React.FC<ProfileCustomizerProps> = ({
                 );
               })}
 
-              {/* Muestra en vivo del selector nativo <input type="color"> */}
               <label
-                title="Elegir cualquier color libre"
-                className={`relative flex h-8 w-8 cursor-pointer items-center justify-center overflow-hidden rounded-full transition-transform active:scale-95 ${
+                title="Elegir cualquier color"
+                className={`relative flex h-9 w-9 cursor-pointer items-center justify-center overflow-hidden rounded-full transition-transform active:scale-95 ${
                   !isPresetColor ? 'ring-2 ring-slate-900 ring-offset-2' : ''
                 }`}
                 style={{
