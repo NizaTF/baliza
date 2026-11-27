@@ -335,6 +335,7 @@ export const SeekerRouletteOverlay: React.FC<SeekerRouletteOverlayProps> = ({
                         size="md"
                         name={p.name}
                         avatarEffectId={playerCosmetics[p.id]?.avatarEffectId}
+                        platinumAvatar={playerCosmetics[p.id]?.platinumAvatar}
                       />
                       <PlayerCosmeticName
                         name={p.name}
@@ -446,6 +447,7 @@ export const SeekerRouletteOverlay: React.FC<SeekerRouletteOverlayProps> = ({
                     size="sm"
                     name={p.name}
                     avatarEffectId={playerCosmetics[p.id]?.avatarEffectId}
+                    platinumAvatar={playerCosmetics[p.id]?.platinumAvatar}
                   />
                   <PlayerCosmeticName
                     name={p.name}

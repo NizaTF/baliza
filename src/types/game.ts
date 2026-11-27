@@ -163,9 +163,60 @@ export interface PlayerLocationPayload {
   campExposed?: boolean;
 }
 
+export type PlatinumNameFillMode = 'solid' | 'gradient2' | 'gradient3' | 'prism';
+export type PlatinumNameAnimation =
+  | 'none'
+  | 'shimmer'
+  | 'pulse'
+  | 'glitch'
+  | 'wave'
+  | 'neon';
+export type PlatinumSpeed = 'slow' | 'normal' | 'fast';
+
+export interface PlatinumNameCustomization {
+  fillMode: PlatinumNameFillMode;
+  colors: [string, string, string];
+  angleDeg: number;
+  animation: PlatinumNameAnimation;
+  speed: PlatinumSpeed;
+  glowEnabled: boolean;
+  glowColor: string;
+  glowIntensity: number;
+  italic: boolean;
+  uppercase: boolean;
+  letterSpacing: 'normal' | 'wide';
+  weight: 'semibold' | 'bold' | 'black';
+}
+
+export type PlatinumAvatarPattern =
+  | 'halo'
+  | 'vortex'
+  | 'radar'
+  | 'orbit'
+  | 'pulse_wave'
+  | 'reticle'
+  | 'dual_spin';
+
+export type PlatinumRingStyle = 'solid' | 'dashed' | 'dotted' | 'double';
+
+export interface PlatinumAvatarCustomization {
+  pattern: PlatinumAvatarPattern;
+  primaryColor: string;
+  secondaryColor: string;
+  glowColor: string;
+  glowIntensity: number;
+  ringWidth: 2 | 3 | 4;
+  ringStyle: PlatinumRingStyle;
+  speed: PlatinumSpeed;
+  reverse: boolean;
+  badge: string;
+}
+
 export interface PlayerCosmetics {
   nameEffectId?: string;
   avatarEffectId?: string;
+  platinumName?: PlatinumNameCustomization;
+  platinumAvatar?: PlatinumAvatarCustomization;
 }
 
 export interface RoomRules {
@@ -308,7 +359,7 @@ export const DEFAULT_RULES: RoomRules = {
     hunterPhotoWindowSec: 60,
     hunterPhotoDelaySec: 15,
     fogEnabled: false,
-    fogRadiusM: 60,
+    fogRadiusM: 25,
     radarEnabled: false,
     radarIntervalSec: 20,
     radarRangeM: 300,

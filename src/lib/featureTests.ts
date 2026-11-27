@@ -8,9 +8,19 @@ import {
 } from './achievements';
 import {
   ALL_COSMETICS,
+  AVATAR_EFFECT_COSMETICS,
+  NAME_EFFECT_COSMETICS,
+  createRandomBotCosmetics,
   getCosmeticsForAchievement,
   sanitizeEquippedCosmetics,
 } from './cosmetics';
+import {
+  DEFAULT_PREFERENCES,
+  getEquippedCosmetics,
+  loadPreferences,
+  savePreferences,
+  syncDebugCosmeticsOnToggle,
+} from './preferences';
 import { safeLocalGet, safeLocalRemove, safeLocalSet } from './safeStorage';
 import {
   computeBearingDeg,
@@ -35,6 +45,7 @@ import {
   findBotAutoCapture,
   pickBotAbilityAction,
   pickBotChatMessage,
+  setSecretSandboxUnlocked,
   stepBotVectors,
 } from './soloSandbox';
 import {
@@ -46,6 +57,15 @@ import {
   VALENCIA_CENTER,
 } from './zones';
 import { createMercatorViewport } from './recapVideoMap';
+import {
+  canReadChatMessage,
+  canSpectatorPerformAction,
+  getSpectatorChatRules,
+  isPlayerSpectator,
+  resolveOutgoingChatChannel,
+  shouldDecoyBeVisibleOnMap,
+  shouldPlayerBeVisibleOnMap,
+} from './spectator';
 import { DEFAULT_RULES, PlayerRecord, PlayerRole } from '../types/game';
 
 export interface FeatureTestCaseResult {
@@ -499,9 +519,10 @@ export async function runAllBalizaFeatureTests(): Promise<FeatureTestSuiteReport
       assertCondition(
         Boolean(noStop?.rules.modifiers.antiCampEliminate) &&
           Boolean(blackout?.rules.modifiers.fogEnabled) &&
+          (blackout?.rules.modifiers.fogRadiusM ?? 999) <= 25 &&
           Boolean(paparazzi?.rules.modifiers.hunterPhotoEnabled) &&
           Boolean(pandemic?.rules.modifiers.infectionModeEnabled),
-        'Todos los presets extremos deben tener sus reglas activas.'
+        'Todos los presets extremos deben tener sus reglas activas (Apagón <= 25 m).'
       );
 
       const listAfterSave = saveCustomPreset('Preset Test Auto', DEFAULT_RULES);
@@ -526,6 +547,9 @@ export async function runAllBalizaFeatureTests(): Promise<FeatureTestSuiteReport
       );
 
       const prevAchievementsBackup = safeLocalGet('baliza_achievements_v2');
+      const prevPrefsBackup = safeLocalGet('baliza_app_preferences_v1');
+      const prevSecretBackup = safeLocalGet('baliza_secret_sandbox_v1');
+      const prevForceLocalBackup = safeLocalGet('baliza_force_local_db_v1');
       try {
         resetAchievementsForTests();
         recordAbilityUsed();
@@ -607,8 +631,34 @@ export async function runAllBalizaFeatureTests(): Promise<FeatureTestSuiteReport
         );
         const sanitizedDebug = sanitizeEquippedCosmetics(
           {
-            nameEffectId: 'name_velocidad',
+            nameEffectId: 'name_platino',
             avatarEffectId: 'avatar_platino',
+            platinumName: {
+              fillMode: 'gradient2',
+              colors: ['#FF0055', '#00E5FF', '#F59E0B'],
+              angleDeg: 45,
+              animation: 'glitch',
+              speed: 'fast',
+              glowEnabled: true,
+              glowColor: '#00E5FF',
+              glowIntensity: 80,
+              italic: true,
+              uppercase: true,
+              letterSpacing: 'wide',
+              weight: 'black',
+            },
+            platinumAvatar: {
+              pattern: 'radar',
+              primaryColor: '#FF0055',
+              secondaryColor: '#00E5FF',
+              glowColor: '#FF0055',
+              glowIntensity: 75,
+              ringWidth: 4,
+              ringStyle: 'dashed',
+              speed: 'fast',
+              reverse: true,
+              badge: '💎',
+            },
           },
           unlockedIds,
           true
@@ -616,9 +666,75 @@ export async function runAllBalizaFeatureTests(): Promise<FeatureTestSuiteReport
         assertCondition(
           sanitizedNormal.nameEffectId === 'name_velocidad' &&
             sanitizedNormal.avatarEffectId === undefined &&
-            sanitizedDebug.nameEffectId === 'name_velocidad' &&
-            sanitizedDebug.avatarEffectId === 'avatar_platino',
-          'En modo normal exige desbloqueo y en modo debug permite equipar cualquier cosmético.'
+            sanitizedNormal.platinumAvatar === undefined &&
+            sanitizedDebug.nameEffectId === 'name_platino' &&
+            sanitizedDebug.avatarEffectId === 'avatar_platino' &&
+            sanitizedDebug.platinumName?.colors[0] === '#FF0055' &&
+            sanitizedDebug.platinumName?.animation === 'glitch' &&
+            sanitizedDebug.platinumAvatar?.pattern === 'radar' &&
+            sanitizedDebug.platinumAvatar?.badge === '💎',
+          'En modo normal exige desbloqueo y en modo debug permite equipar y personalizar al 100 % el Platino.'
+        );
+
+        // Bot cosmetics randomization validation
+        const validNameIds = new Set(NAME_EFFECT_COSMETICS.map((c) => c.id));
+        const validAvatarIds = new Set(AVATAR_EFFECT_COSMETICS.map((c) => c.id));
+        for (let i = 0; i < 20; i += 1) {
+          const botCosmetics = createRandomBotCosmetics();
+          assertCondition(
+            Boolean(botCosmetics.nameEffectId && validNameIds.has(botCosmetics.nameEffectId)) &&
+              Boolean(botCosmetics.avatarEffectId && validAvatarIds.has(botCosmetics.avatarEffectId)),
+            'Los bots deben recibir color de texto y efecto de icono aleatorios válidos.'
+          );
+          if (botCosmetics.nameEffectId === 'name_platino') {
+            assertCondition(
+              Boolean(botCosmetics.platinumName?.colors.length),
+              'Si un bot obtiene texto Platino, debe generar configuración personalizada.'
+            );
+          }
+          if (botCosmetics.avatarEffectId === 'avatar_platino') {
+            assertCondition(
+              Boolean(botCosmetics.platinumAvatar?.pattern),
+              'Si un bot obtiene icono Platino, debe generar configuración personalizada.'
+            );
+          }
+        }
+
+        // Debug cosmetics persistence across toggles
+        setSecretSandboxUnlocked(true);
+        savePreferences({
+          ...DEFAULT_PREFERENCES,
+          equippedCosmetics: {
+            nameEffectId: 'name_platino',
+            avatarEffectId: 'avatar_platino',
+            platinumName: sanitizedDebug.platinumName,
+            platinumAvatar: sanitizedDebug.platinumAvatar,
+          },
+        });
+        assertCondition(
+          loadPreferences().debugCosmetics?.nameEffectId === 'name_platino' &&
+            getEquippedCosmetics().avatarEffectId === 'avatar_platino',
+          'Los cosméticos equipados en modo debug deben guardarse en debugCosmetics.'
+        );
+
+        setSecretSandboxUnlocked(false);
+        syncDebugCosmeticsOnToggle(false);
+        savePreferences({
+          ...loadPreferences(),
+          equippedCosmetics: { nameEffectId: 'name_velocidad' },
+        });
+        assertCondition(
+          getEquippedCosmetics().nameEffectId === 'name_velocidad' &&
+            getEquippedCosmetics().avatarEffectId === undefined,
+          'En modo normal no se filtran los cosméticos exclusivos del modo debug.'
+        );
+
+        setSecretSandboxUnlocked(true);
+        syncDebugCosmeticsOnToggle(true);
+        assertCondition(
+          getEquippedCosmetics().nameEffectId === 'name_platino' &&
+            getEquippedCosmetics().avatarEffectId === 'avatar_platino',
+          'Al volver a activar el modo debug se restauran los cosméticos guardados.'
         );
 
         return `${BUILT_IN_PRESETS.length} presets, ${loaded.achievements.filter((a) => a.unlocked).length}/20 logros y ${ALL_COSMETICS.length} cosméticos validados.`;
@@ -627,6 +743,21 @@ export async function runAllBalizaFeatureTests(): Promise<FeatureTestSuiteReport
           safeLocalSet('baliza_achievements_v2', prevAchievementsBackup);
         } else {
           safeLocalRemove('baliza_achievements_v2');
+        }
+        if (prevPrefsBackup !== null) {
+          safeLocalSet('baliza_app_preferences_v1', prevPrefsBackup);
+        } else {
+          safeLocalRemove('baliza_app_preferences_v1');
+        }
+        if (prevSecretBackup !== null) {
+          safeLocalSet('baliza_secret_sandbox_v1', prevSecretBackup);
+        } else {
+          safeLocalRemove('baliza_secret_sandbox_v1');
+        }
+        if (prevForceLocalBackup !== null) {
+          safeLocalSet('baliza_force_local_db_v1', prevForceLocalBackup);
+        } else {
+          safeLocalRemove('baliza_force_local_db_v1');
         }
       }
     }
@@ -666,6 +797,180 @@ export async function runAllBalizaFeatureTests(): Promise<FeatureTestSuiteReport
       return hasMediaRecorder
         ? `Proyección Mercator (${viewport.tiles.length} tiles z${viewport.tileZoom}) y MediaRecorder listos.`
         : `Métrica y proyección Mercator OK (${viewport.tiles.length} tiles z${viewport.tileZoom}).`;
+    }
+  );
+
+  await runCase(
+    'spectator_anticheat_mode',
+    'Modo Espectador: visión total y reglas anti-trampas',
+    async () => {
+      const caughtMap = {
+        dead_hider: { at: '2026-01-01T00:02:00.000Z', byPlayerId: 's1' },
+      };
+      assertCondition(
+        isPlayerSpectator(caughtMap, 'dead_hider') === true &&
+          isPlayerSpectator(caughtMap, 'alive_hider') === false,
+        'Debe detectar correctamente si el jugador está eliminado (espectador).'
+      );
+
+      // 1. Visibilidad total para espectadores incluso con niebla activa y fuera de rango
+      const aliveBlockedByFog = shouldPlayerBeVisibleOnMap({
+        isSpectator: false,
+        myRole: 'seeker',
+        otherRole: 'hider',
+        hidersCanSeeSeekers: false,
+        seekersCanSeeHiders: true,
+        stormExposed: false,
+        isLocOff: false,
+        isCampExposed: false,
+        isClassicHintRevealed: false,
+        fogEnabled: true,
+        distanceToOtherM: 500,
+        fogRadiusM: 120,
+      });
+      const spectatorSeesThroughFog = shouldPlayerBeVisibleOnMap({
+        isSpectator: true,
+        myRole: 'hider',
+        otherRole: 'hider',
+        hidersCanSeeSeekers: false,
+        seekersCanSeeHiders: false,
+        stormExposed: false,
+        isLocOff: false,
+        isCampExposed: false,
+        isClassicHintRevealed: false,
+        fogEnabled: true,
+        distanceToOtherM: 500,
+        fogRadiusM: 120,
+      });
+      const aliveHiderMissesOtherDecoy = shouldDecoyBeVisibleOnMap({
+        isSpectator: false,
+        myRole: 'hider',
+        isOwner: false,
+        fogEnabled: false,
+        distanceToDecoyM: 40,
+        fogRadiusM: 120,
+      });
+      const spectatorSeesAllDecoys = shouldDecoyBeVisibleOnMap({
+        isSpectator: true,
+        myRole: 'hider',
+        isOwner: false,
+        fogEnabled: true,
+        distanceToDecoyM: 800,
+        fogRadiusM: 120,
+      });
+      const aliveInsideBlackoutRadius = shouldPlayerBeVisibleOnMap({
+        isSpectator: false,
+        myRole: 'hider',
+        otherRole: 'seeker',
+        hidersCanSeeSeekers: false,
+        seekersCanSeeHiders: false,
+        stormExposed: false,
+        isLocOff: false,
+        isCampExposed: false,
+        isClassicHintRevealed: false,
+        fogEnabled: true,
+        distanceToOtherM: 15,
+        fogRadiusM: 20,
+      });
+      const aliveOutsideBlackoutRadius = shouldPlayerBeVisibleOnMap({
+        isSpectator: false,
+        myRole: 'hider',
+        otherRole: 'seeker',
+        hidersCanSeeSeekers: true,
+        seekersCanSeeHiders: true,
+        stormExposed: true,
+        isLocOff: false,
+        isCampExposed: true,
+        isClassicHintRevealed: true,
+        fogEnabled: true,
+        distanceToOtherM: 35,
+        fogRadiusM: 20,
+      });
+      assertCondition(
+        aliveBlockedByFog === false &&
+          spectatorSeesThroughFog === true &&
+          aliveInsideBlackoutRadius === true &&
+          aliveOutsideBlackoutRadius === false &&
+          aliveHiderMissesOtherDecoy === false &&
+          spectatorSeesAllDecoys === true,
+        'En Apagón Total los vivos solo se ven dentro del radio bajo, y el espectador ve a todos.'
+      );
+
+      // 2. Bloqueos anti-trampas de acciones
+      assertCondition(
+        canSpectatorPerformAction('capture', { isSpectator: true }) === false &&
+          canSpectatorPerformAction('ability', { isSpectator: true }) === false &&
+          canSpectatorPerformAction('compass', { isSpectator: true }) === false &&
+          canSpectatorPerformAction('photo_challenge', { isSpectator: true }) === false &&
+          canSpectatorPerformAction('photo_reject', { isSpectator: true }) === false &&
+          canSpectatorPerformAction('beacon_capture', { isSpectator: true }) === false &&
+          canSpectatorPerformAction('broadcast_gps', { isSpectator: true }) === false &&
+          canSpectatorPerformAction('joystick', { isSpectator: true, sandboxUnlocked: false }) === false &&
+          canSpectatorPerformAction('joystick', { isSpectator: true, sandboxUnlocked: true }) === true &&
+          canSpectatorPerformAction('undo_elimination', { isSpectator: true, isSelf: true, sandboxUnlocked: true }) === false &&
+          canSpectatorPerformAction('undo_elimination', { isSpectator: true, isSelf: false, sandboxUnlocked: false }) === false,
+        'El espectador no debe poder capturar, usar habilidades, brújula, fotos, baliza ni autorrevivirse.'
+      );
+
+      // 3. Aislamiento del chat anti-chivatazos
+      const rules = getSpectatorChatRules({
+        isSpectator: true,
+        matchEnded: false,
+        myRole: 'hider',
+      });
+      assertCondition(
+        rules.lockedToSpectatorsOnly === true &&
+          rules.canWriteGlobalOrTeam === false &&
+          resolveOutgoingChatChannel('all', { isSpectator: true, matchEnded: false }) === 'spectators' &&
+          resolveOutgoingChatChannel('team', { isSpectator: true, matchEnded: false }) === 'spectators',
+        'El espectador en partida activa solo puede escribir en el canal de espectadores.'
+      );
+
+      const specCtx = { isSpectator: true, matchEnded: false, myRole: 'hider' as PlayerRole };
+      const aliveHiderCtx = { isSpectator: false, matchEnded: false, myRole: 'hider' as PlayerRole };
+      const postMatchAliveCtx = { isSpectator: false, matchEnded: true, myRole: 'hider' as PlayerRole };
+
+      assertCondition(
+        canReadChatMessage({ channel: 'spectators', senderRole: 'hider' }, aliveHiderCtx) === false &&
+          canReadChatMessage({ channel: 'spectators', senderRole: 'hider' }, specCtx) === true &&
+          canReadChatMessage({ channel: 'team', senderRole: 'hider' }, specCtx) === false &&
+          canReadChatMessage({ channel: 'all', senderRole: 'seeker' }, specCtx) === true &&
+          canReadChatMessage({ channel: 'spectators', senderRole: 'hider' }, postMatchAliveCtx) === true,
+        'Los vivos no pueden leer el chat de espectadores hasta que termine la partida.'
+      );
+
+      // 4. Sincronización local de canal 'spectators'
+      const specRoomId = `test_spec_chat_${Date.now()}`;
+      let specMessages: RoomChatMessage[] = [];
+      const unsub = subscribeRoomChatMessages(
+        specRoomId,
+        (msgs) => {
+          specMessages = msgs;
+        },
+        undefined,
+        { forceLocal: true }
+      );
+      await sendRoomChatMessage({
+        roomId: specRoomId,
+        roomCode: 'SPEC',
+        senderPlayerId: 'dead_hider',
+        senderName: 'Fantasma',
+        senderEmoji: '👻',
+        senderRole: 'hider',
+        channel: 'spectators',
+        text: 'Solo para otros espectadores',
+        forceLocal: true,
+      });
+      unsub();
+
+      assertCondition(
+        specMessages.some(
+          (m) => m.channel === 'spectators' && m.text.includes('Solo para otros espectadores')
+        ),
+        'Los mensajes en canal spectators deben persistirse y recuperarse correctamente.'
+      );
+
+      return 'Visión total sin niebla, acciones bloqueadas y chat aislado anti-trampas verificados.';
     }
   );
 

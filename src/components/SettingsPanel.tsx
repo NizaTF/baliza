@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Award, Check, Coffee, ExternalLink, Lock, Sparkles, Volume2, X } from 'lucide-react';
+import { Award, Check, Coffee, ExternalLink, Lock, SlidersHorizontal, Sparkles, Volume2, X } from 'lucide-react';
 import { AchievementsModal } from './AchievementsModal';
 import { loadStatsAndAchievements } from '../lib/achievements';
 import {
@@ -9,6 +9,8 @@ import {
   getAchievementTitleById,
   sanitizeEquippedCosmetics,
 } from '../lib/cosmetics';
+import { PlatinumCustomizer, PlatinumTab } from './PlatinumCustomizer';
+import { DebugUnlockModal } from './DebugUnlockModal';
 import {
   APP_AUTHOR,
   APP_VERSION,
@@ -20,6 +22,7 @@ import {
   loadPreferences,
   savePreferences,
   subscribePreferences,
+  syncDebugCosmeticsOnToggle,
   triggerHaptic,
 } from '../lib/preferences';
 import {
@@ -102,6 +105,8 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
   const [prefs, setPrefs] = useState<AppPreferences>(() => loadPreferences());
   const [localAchievementsOpen, setLocalAchievementsOpen] = useState(false);
   const [cosmeticTab, setCosmeticTab] = useState<CosmeticKind>('nameEffect');
+  const [platinumModalTab, setPlatinumModalTab] = useState<PlatinumTab | null>(null);
+  const [showDebugModal, setShowDebugModal] = useState(false);
   const [debugUnlockAll, setDebugUnlockAll] = useState(() =>
     isSecretSandboxUnlocked()
   );
@@ -142,12 +147,9 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
     secretTapRef.current.lastMs = now;
     if (secretTapRef.current.count >= 5) {
       secretTapRef.current.count = 0;
-      const next = !isSecretSandboxUnlocked();
-      setSecretSandboxUnlocked(next);
-      if (next) {
-        unlockRetroAudio();
-        playSecretUnlockChime();
-      }
+      unlockRetroAudio();
+      playPixelUiClick('toggle');
+      setShowDebugModal(true);
     }
   };
 
@@ -220,24 +222,43 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                 Colores de texto y efectos de icono
               </h2>
               {debugUnlockAll && (
-                <span className="rounded-md border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-800">
+                <button
+                  type="button"
+                  onClick={() => setShowDebugModal(true)}
+                  className="rounded-md border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-800 hover:bg-amber-100"
+                  title="Gestionar o salir del modo Debug"
+                >
                   Debug · Todos activos
-                </span>
+                </button>
               )}
             </div>
-            <button
-              type="button"
-              onClick={() => {
-                if (onOpenAchievements) {
-                  onOpenAchievements();
-                } else {
-                  setLocalAchievementsOpen(true);
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() =>
+                  setPlatinumModalTab(
+                    cosmeticTab === 'avatarEffect' ? 'avatar' : 'name'
+                  )
                 }
-              }}
-              className="text-xs font-semibold text-emerald-700 hover:underline"
-            >
-              Ver logros
-            </button>
+                className="inline-flex items-center gap-1 text-xs font-semibold text-amber-700 hover:underline"
+              >
+                <SlidersHorizontal className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>Personalizar Platino</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (onOpenAchievements) {
+                    onOpenAchievements();
+                  } else {
+                    setLocalAchievementsOpen(true);
+                  }
+                }}
+                className="text-xs font-semibold text-emerald-700 hover:underline"
+              >
+                Ver logros
+              </button>
+            </div>
           </div>
 
           {/* Vista previa equipada */}
@@ -248,6 +269,7 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
               size="md"
               name={previewProfile.name || 'Jugador'}
               avatarEffectId={equippedCosmetics.avatarEffectId}
+              platinumAvatar={equippedCosmetics.platinumAvatar}
             />
             <div className="min-w-0 flex-1">
               <p className="text-[11px] font-medium text-slate-500">
@@ -259,6 +281,24 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
                 className="text-sm font-bold text-slate-900"
               />
             </div>
+            {(equippedCosmetics.nameEffectId === 'name_platino' ||
+              equippedCosmetics.avatarEffectId === 'avatar_platino') && (
+              <button
+                type="button"
+                onClick={() =>
+                  setPlatinumModalTab(
+                    equippedCosmetics.avatarEffectId === 'avatar_platino' &&
+                      cosmeticTab === 'avatarEffect'
+                      ? 'avatar'
+                      : 'name'
+                  )
+                }
+                className="inline-flex min-h-[36px] shrink-0 items-center gap-1.5 rounded-lg border border-amber-300 bg-amber-50 px-2.5 text-xs font-semibold text-amber-900 hover:bg-amber-100"
+              >
+                <SlidersHorizontal className="h-3.5 w-3.5" aria-hidden="true" />
+                <span>Editar 100%</span>
+              </button>
+            )}
           </div>
 
           {/* Pestañas Color de texto / Efecto de icono */}
@@ -325,7 +365,15 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
               unlockRetroAudio();
               playPixelUiClick('confirm');
               triggerHaptic(14);
-              const nextCosmetics: PlayerCosmetics = { ...equippedCosmetics };
+              const nextCosmetics: PlayerCosmetics = {
+                ...equippedCosmetics,
+                ...(prefs.equippedCosmetics.platinumName
+                  ? { platinumName: prefs.equippedCosmetics.platinumName }
+                  : {}),
+                ...(prefs.equippedCosmetics.platinumAvatar
+                  ? { platinumAvatar: prefs.equippedCosmetics.platinumAvatar }
+                  : {}),
+              };
               if (cosmeticTab === 'nameEffect') {
                 if (nextId) nextCosmetics.nameEffectId = nextId;
                 else delete nextCosmetics.nameEffectId;
@@ -337,90 +385,128 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
             };
 
             return (
-              <div className="grid grid-cols-1 gap-2 max-h-64 overflow-y-auto pr-0.5 sm:grid-cols-2">
-                <button
-                  type="button"
-                  onClick={() => handleEquip(undefined)}
-                  className={`flex min-h-[48px] items-center justify-between gap-2 rounded-xl border px-3 py-2 text-left text-xs transition-colors ${
-                    !currentId
-                      ? 'border-emerald-500 bg-emerald-50/70'
-                      : 'border-slate-200 bg-white hover:bg-slate-50'
-                  }`}
-                >
-                  <div>
-                    <p className="font-semibold text-slate-900">
-                      {cosmeticTab === 'nameEffect'
-                        ? 'Color estándar'
-                        : 'Marco estándar'}
-                    </p>
-                    <p className="text-[11px] text-slate-500">Por defecto</p>
-                  </div>
-                  {!currentId && (
-                    <Check className="h-4 w-4 shrink-0 text-emerald-600" aria-hidden="true" />
-                  )}
-                </button>
+              <div className="space-y-2.5">
+                <div className="grid grid-cols-1 gap-2 max-h-68 overflow-y-auto pr-0.5 sm:grid-cols-2">
+                  <button
+                    type="button"
+                    onClick={() => handleEquip(undefined)}
+                    className={`flex min-h-[48px] items-center justify-between gap-2 rounded-xl border px-3 py-2 text-left text-xs transition-colors ${
+                      !currentId
+                        ? 'border-emerald-500 bg-emerald-50/70'
+                        : 'border-slate-200 bg-white hover:bg-slate-50'
+                    }`}
+                  >
+                    <div>
+                      <p className="font-semibold text-slate-900">
+                        {cosmeticTab === 'nameEffect'
+                          ? 'Color estándar'
+                          : 'Marco estándar'}
+                      </p>
+                      <p className="text-[11px] text-slate-500">Por defecto</p>
+                    </div>
+                    {!currentId && (
+                      <Check className="h-4 w-4 shrink-0 text-emerald-600" aria-hidden="true" />
+                    )}
+                  </button>
 
-                {list.map((item) => {
-                  const unlocked =
-                    debugUnlockAll ||
-                    unlockedAchievementIds.has(item.unlockAchievementId);
-                  const selected = currentId === item.id;
-                  const reqTitle = getAchievementTitleById(item.unlockAchievementId);
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      disabled={!unlocked}
-                      onClick={() => handleEquip(item.id)}
-                      className={`flex min-h-[54px] items-center justify-between gap-2 rounded-xl border px-3 py-2 text-left transition-colors ${
-                        selected
-                          ? 'border-emerald-500 bg-emerald-50/70'
-                          : unlocked
-                          ? 'border-slate-200 bg-white hover:bg-slate-50'
-                          : 'border-slate-200 bg-slate-50/70 opacity-65 cursor-not-allowed'
-                      }`}
-                    >
-                      <div className="min-w-0 flex-1 space-y-1">
-                        {item.kind === 'nameEffect' ? (
-                          <p className={`truncate text-xs ${item.className}`}>
-                            {item.label}
-                          </p>
-                        ) : (
-                          <div className="flex items-center gap-2">
-                            <PlayerAvatar
-                              emoji={previewProfile.emoji}
-                              color={previewProfile.color}
-                              size="sm"
-                              avatarEffectId={item.id}
+                  {list.map((item) => {
+                    const unlocked =
+                      debugUnlockAll ||
+                      unlockedAchievementIds.has(item.unlockAchievementId);
+                    const selected = currentId === item.id;
+                    const reqTitle = getAchievementTitleById(item.unlockAchievementId);
+                    const isPlatinumItem =
+                      item.id === 'name_platino' || item.id === 'avatar_platino';
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        disabled={!unlocked}
+                        onClick={() => handleEquip(item.id)}
+                        className={`flex min-h-[56px] items-center justify-between gap-2 rounded-xl border px-3 py-2 text-left transition-colors ${
+                          selected
+                            ? 'border-emerald-500 bg-emerald-50/70'
+                            : unlocked
+                            ? 'border-slate-200 bg-white hover:bg-slate-50'
+                            : 'border-slate-200 bg-slate-50/70 opacity-65 cursor-not-allowed'
+                        }`}
+                      >
+                        <div className="min-w-0 flex-1 space-y-1">
+                          {item.kind === 'nameEffect' ? (
+                            <PlayerCosmeticName
+                              name={item.label}
+                              cosmetics={{
+                                nameEffectId: item.id,
+                                platinumName: prefs.equippedCosmetics.platinumName,
+                              }}
+                              className="text-xs font-bold text-slate-900"
                             />
-                            <span className="truncate text-xs font-semibold text-slate-900">
-                              {item.label}
-                            </span>
-                          </div>
-                        )}
-                        <p className="truncate text-[11px] text-slate-500">
-                          {unlockedAchievementIds.has(item.unlockAchievementId)
-                            ? item.description
-                            : debugUnlockAll
-                            ? `Debug libre · Logro: ${reqTitle}`
-                            : `Logro: ${reqTitle}`}
-                        </p>
-                      </div>
+                          ) : (
+                            <div className="flex items-center gap-2.5">
+                              <PlayerAvatar
+                                emoji={previewProfile.emoji}
+                                color={previewProfile.color}
+                                size="sm"
+                                avatarEffectId={item.id}
+                                platinumAvatar={prefs.equippedCosmetics.platinumAvatar}
+                              />
+                              <span className="truncate text-xs font-semibold text-slate-900">
+                                {item.label}
+                              </span>
+                            </div>
+                          )}
+                          <p className="truncate text-[11px] text-slate-500">
+                            {unlockedAchievementIds.has(item.unlockAchievementId)
+                              ? item.description
+                              : debugUnlockAll
+                              ? `Debug libre · Logro: ${reqTitle}`
+                              : `Logro: ${reqTitle}`}
+                          </p>
+                        </div>
 
-                      {selected ? (
-                        <Check
-                          className="h-4 w-4 shrink-0 text-emerald-600"
-                          aria-label="Equipado"
-                        />
-                      ) : !unlocked ? (
-                        <Lock
-                          className="h-3.5 w-3.5 shrink-0 text-slate-400"
-                          aria-label="Bloqueado"
-                        />
-                      ) : null}
-                    </button>
-                  );
-                })}
+                        {selected ? (
+                          <Check
+                            className="h-4 w-4 shrink-0 text-emerald-600"
+                            aria-label="Equipado"
+                          />
+                        ) : !unlocked ? (
+                          <Lock
+                            className="h-3.5 w-3.5 shrink-0 text-slate-400"
+                            aria-label={isPlatinumItem ? 'Platino bloqueado' : 'Bloqueado'}
+                          />
+                        ) : null}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Acceso directo al Estudio Platino 100% personalizable */}
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-200/80 bg-amber-50/50 px-3.5 py-2.5">
+                  <div className="min-w-0">
+                    <p className="text-xs font-semibold text-slate-900">
+                      Recompensa de todos los logros · 100 % personalizable
+                    </p>
+                    <p className="text-[11px] text-slate-600">
+                      Elige tus propios colores, degradados, animación, patrón e insignia.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setPlatinumModalTab(
+                        cosmeticTab === 'avatarEffect' ? 'avatar' : 'name'
+                      )
+                    }
+                    className="inline-flex min-h-[38px] shrink-0 items-center gap-1.5 rounded-xl bg-amber-500 px-3 text-xs font-bold text-slate-950 hover:bg-amber-400"
+                  >
+                    <SlidersHorizontal className="h-3.5 w-3.5" aria-hidden="true" />
+                    <span>
+                      {debugUnlockAll || unlockedAchievementIds.has('platinum_master')
+                        ? 'Personalizar 100 %'
+                        : 'Probar estudio'}
+                    </span>
+                  </button>
+                </div>
               </div>
             );
           })()}
@@ -680,6 +766,52 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({
       </div>
       {localAchievementsOpen && (
         <AchievementsModal onClose={() => setLocalAchievementsOpen(false)} />
+      )}
+      {platinumModalTab && (
+        <PlatinumCustomizer
+          initialTab={platinumModalTab}
+          profile={previewProfile}
+          platinumName={prefs.equippedCosmetics.platinumName}
+          platinumAvatar={prefs.equippedCosmetics.platinumAvatar}
+          unlocked={debugUnlockAll || unlockedAchievementIds.has('platinum_master')}
+          onChangePlatinumName={(nextName, equipToo) => {
+            updatePrefs({
+              equippedCosmetics: {
+                ...prefs.equippedCosmetics,
+                platinumName: nextName,
+                ...(equipToo ? { nameEffectId: 'name_platino' } : {}),
+              },
+            });
+          }}
+          onChangePlatinumAvatar={(nextAvatar, equipToo) => {
+            updatePrefs({
+              equippedCosmetics: {
+                ...prefs.equippedCosmetics,
+                platinumAvatar: nextAvatar,
+                ...(equipToo ? { avatarEffectId: 'avatar_platino' } : {}),
+              },
+            });
+          }}
+          onClose={() => setPlatinumModalTab(null)}
+        />
+      )}
+      {showDebugModal && (
+        <DebugUnlockModal
+          isCurrentlyUnlocked={debugUnlockAll}
+          onConfirmActivate={() => {
+            setSecretSandboxUnlocked(true);
+            syncDebugCosmeticsOnToggle(true);
+            unlockRetroAudio();
+            playSecretUnlockChime();
+            setShowDebugModal(false);
+          }}
+          onConfirmDeactivate={() => {
+            setSecretSandboxUnlocked(false);
+            syncDebugCosmeticsOnToggle(false);
+            setShowDebugModal(false);
+          }}
+          onClose={() => setShowDebugModal(false)}
+        />
       )}
     </div>
   );

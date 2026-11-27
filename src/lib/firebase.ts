@@ -101,9 +101,10 @@ void testConnection();
 const VALID_ID_REGEX = /^[a-zA-Z0-9_\-]+$/;
 const VALID_ROOM_CODE_REGEX = /^[A-Z0-9]+$/;
 export const CHAT_TEXT_MAX_LENGTH = 180;
+const SPECTATOR_TEXT_PREFIX = '[ESP] ';
 const SANDBOX_CHAT_EVENT = 'baliza:sandbox-chat-updated';
 
-export type ChatChannel = 'all' | 'team';
+export type ChatChannel = 'all' | 'team' | 'spectators';
 
 export interface RoomChatMessage {
   id: string;
@@ -232,6 +233,18 @@ export function subscribeRoomChatMessages(
         const ts = d.createdAt as Timestamp | undefined;
         const createdAtMs =
           ts && typeof ts.toMillis === 'function' ? ts.toMillis() : Date.now();
+        const rawText = String(d.text ?? '');
+        const isEncodedSpectator = rawText.startsWith(SPECTATOR_TEXT_PREFIX);
+        const decodedChannel: ChatChannel = isEncodedSpectator
+          ? 'spectators'
+          : d.channel === 'spectators'
+          ? 'spectators'
+          : d.channel === 'team'
+          ? 'team'
+          : 'all';
+        const decodedText = isEncodedSpectator
+          ? rawText.slice(SPECTATOR_TEXT_PREFIX.length)
+          : rawText;
         return {
           id: docSnap.id,
           roomId: String(d.roomId ?? safeRoomId),
@@ -241,8 +254,8 @@ export function subscribeRoomChatMessages(
           senderName: String(d.senderName ?? 'Jugador'),
           senderEmoji: String(d.senderEmoji ?? '💬'),
           senderRole: d.senderRole === 'seeker' ? 'seeker' : 'hider',
-          channel: d.channel === 'team' ? 'team' : 'all',
-          text: String(d.text ?? ''),
+          channel: decodedChannel,
+          text: decodedText,
           createdAtMs,
         };
       });
@@ -306,6 +319,15 @@ export async function sendRoomChatMessage(input: {
   }
 
   const path = `rooms/${safeRoomId}/messages`;
+  const wireChannel: 'all' | 'team' =
+    input.channel === 'spectators' ? 'team' : input.channel;
+  const wireText =
+    input.channel === 'spectators'
+      ? `${SPECTATOR_TEXT_PREFIX}${cleanText.slice(
+          0,
+          CHAT_TEXT_MAX_LENGTH - SPECTATOR_TEXT_PREFIX.length
+        )}`
+      : cleanText;
   try {
     await addDoc(collection(db, 'rooms', safeRoomId, 'messages'), {
       roomId: safeRoomId,
@@ -315,8 +337,8 @@ export async function sendRoomChatMessage(input: {
       senderName: safeName,
       senderEmoji: safeEmoji,
       senderRole: input.senderRole,
-      channel: input.channel,
-      text: cleanText,
+      channel: wireChannel,
+      text: wireText,
       createdAt: serverTimestamp(),
     });
   } catch (error) {

@@ -8,7 +8,7 @@ import {
   PlayerRole,
   StormZonePhase,
 } from '../types/game';
-import { safeSessionGet, safeSessionSet } from './safeStorage';
+import { safeLocalGet, safeLocalSet } from './safeStorage';
 import { distanceMeters, VALENCIA_CENTER } from './zones';
 
 const SECRET_UNLOCK_KEY = 'baliza_secret_sandbox_v1';
@@ -39,26 +39,27 @@ export function isBotPlayerId(playerId: string): boolean {
 }
 
 export function isSecretSandboxUnlocked(): boolean {
-  if (typeof window === 'undefined') return false;
-  try {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('lab') === '1' || params.get('test') === '1') {
-      safeSessionSet(SECRET_UNLOCK_KEY, '1');
-      safeSessionSet(FORCE_LOCAL_KEY, '1');
-      return true;
+  if (typeof window !== 'undefined') {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('lab') === '1' || params.get('test') === '1') {
+        safeLocalSet(SECRET_UNLOCK_KEY, '1');
+        safeLocalSet(FORCE_LOCAL_KEY, '1');
+        return true;
+      }
+    } catch {
+      // Ignore URL parse error
     }
-  } catch {
-    // Ignore URL parse error
   }
-  return safeSessionGet(SECRET_UNLOCK_KEY) === '1';
+  return safeLocalGet(SECRET_UNLOCK_KEY) === '1';
 }
 
 export function setSecretSandboxUnlocked(unlocked: boolean): void {
-  safeSessionSet(SECRET_UNLOCK_KEY, unlocked ? '1' : '0');
+  safeLocalSet(SECRET_UNLOCK_KEY, unlocked ? '1' : '0');
   if (unlocked) {
-    safeSessionSet(FORCE_LOCAL_KEY, '1');
+    safeLocalSet(FORCE_LOCAL_KEY, '1');
   } else {
-    safeSessionSet(FORCE_LOCAL_KEY, '0');
+    safeLocalSet(FORCE_LOCAL_KEY, '0');
   }
   listeners.forEach((fn) => fn(unlocked));
 }
@@ -71,11 +72,11 @@ export function subscribeSecretSandbox(listener: SandboxListener): () => void {
 }
 
 export function isForceLocalSandboxEnabled(): boolean {
-  return safeSessionGet(FORCE_LOCAL_KEY) === '1';
+  return safeLocalGet(FORCE_LOCAL_KEY) === '1';
 }
 
 export function setForceLocalSandboxEnabled(enabled: boolean): void {
-  safeSessionSet(FORCE_LOCAL_KEY, enabled ? '1' : '0');
+  safeLocalSet(FORCE_LOCAL_KEY, enabled ? '1' : '0');
 }
 
 export function createBotPlayers(

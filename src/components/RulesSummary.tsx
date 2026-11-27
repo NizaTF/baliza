@@ -26,7 +26,7 @@ export const RulesSummary: React.FC<RulesSummaryProps> = ({ rules }) => {
     if (m?.abilitiesEnabled ?? true) labels.push('🪄 Habilidades');
     if (rules.beaconVictoryEnabled ?? true) labels.push('🚩 Baliza');
     if (m?.hunterPhotoEnabled) labels.push('📸 Foto');
-    if (m?.fogEnabled) labels.push('🌫️ Niebla');
+    if (m?.fogEnabled) labels.push('🌑 Apagón total');
     if (m?.radarEnabled) labels.push('📡 Radar');
     if (m?.trailEnabled) labels.push('👣 Rastro');
     if (m?.stealthStillEnabled) labels.push('🥷 Sigilo');

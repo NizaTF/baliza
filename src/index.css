@@ -425,7 +425,7 @@
   padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
 }
 
-/* Cosméticos desbloqueables por logros: colores/efectos de texto y de icono */
+/* Cosméticos desbloqueables por logros: colores/efectos de texto y de icono creativos y diferenciados */
 @keyframes baliza-shimmer {
   0% {
     background-position: 0% 50%;
@@ -438,193 +438,413 @@
   }
 }
 
-@keyframes baliza-ring-pulse {
+@keyframes baliza-flash-sweep {
+  0%, 72%, 100% {
+    background-position: 120% 50%;
+    filter: drop-shadow(0 0 2px rgba(245, 158, 11, 0.25));
+  }
+  82% {
+    background-position: -30% 50%;
+    filter: drop-shadow(0 0 10px rgba(254, 240, 138, 0.95));
+  }
+}
+
+@keyframes baliza-velocity-streak {
+  0% {
+    background-position: 130% 50%;
+  }
+  45%, 100% {
+    background-position: -60% 50%;
+  }
+}
+
+@keyframes baliza-eclipse-corona {
   0%, 100% {
-    transform: scale(1);
-    opacity: 0.92;
+    text-shadow: 0 0 6px rgba(129, 140, 248, 0.5), 0 0 14px rgba(199, 210, 254, 0.22);
   }
   50% {
-    transform: scale(1.06);
-    opacity: 1;
+    text-shadow: 0 0 11px rgba(165, 180, 252, 0.88), 0 0 22px rgba(99, 102, 241, 0.45);
   }
 }
 
-.baliza-name-velocity {
-  background: linear-gradient(90deg, #ca8a04, #84cc16, #f59e0b, #ca8a04);
-  background-size: 220% auto;
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  font-weight: 800;
-  animation: baliza-shimmer 2.2s linear infinite;
+@keyframes baliza-bio-pulse {
+  0%, 100% {
+    filter: drop-shadow(0 0 3px rgba(132, 204, 22, 0.35));
+  }
+  50% {
+    filter: drop-shadow(0 0 10px rgba(74, 222, 128, 0.85));
+  }
 }
 
-.baliza-name-eclipse {
-  background: linear-gradient(90deg, #312e81, #6366f1, #94a3b8, #312e81);
-  background-size: 200% auto;
+@keyframes baliza-glitch-jitter {
+  0%, 84%, 100% {
+    transform: translate(0, 0);
+    text-shadow: -1.5px 0 rgba(6, 182, 212, 0.7), 1.5px 0 rgba(244, 63, 94, 0.78);
+  }
+  86% {
+    transform: translate(-1.5px, 0.5px);
+    text-shadow: -3px 0 rgba(6, 182, 212, 0.95), 2.5px 0 rgba(244, 63, 94, 0.95);
+  }
+  89% {
+    transform: translate(1.5px, -0.5px);
+    text-shadow: 2px 0 rgba(251, 146, 60, 0.95), -2px 0 rgba(225, 29, 72, 0.95);
+  }
+  92% {
+    transform: translate(0, 0);
+    text-shadow: -1.5px 0 rgba(6, 182, 212, 0.7), 1.5px 0 rgba(244, 63, 94, 0.78);
+  }
+}
+
+@keyframes baliza-ghost-drift {
+  0%, 100% {
+    opacity: 0.98;
+    text-shadow: 0 0 4px rgba(167, 139, 250, 0.35), 4px 0 8px rgba(34, 211, 238, 0.25);
+  }
+  50% {
+    opacity: 0.74;
+    text-shadow: -3px 0 9px rgba(167, 139, 250, 0.65), 6px 0 12px rgba(34, 211, 238, 0.55);
+  }
+}
+
+@keyframes baliza-ember-flicker {
+  0%, 100% {
+    background-position: 50% 0%;
+    filter: drop-shadow(0 1px 4px rgba(249, 115, 22, 0.45));
+  }
+  35% {
+    background-position: 50% 60%;
+    filter: drop-shadow(0 -1px 8px rgba(245, 158, 11, 0.75));
+  }
+  70% {
+    background-position: 50% 100%;
+    filter: drop-shadow(0 1px 5px rgba(220, 38, 38, 0.6));
+  }
+}
+
+/* 1. Voltaje Cinético — tipografía inclinada de velocidad + rayo especular */
+.baliza-name-velocity {
+  display: inline-block;
+  font-style: italic;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  transform: skewX(-7deg);
+  background: linear-gradient(
+    110deg,
+    #ca8a04 0%,
+    #eab308 35%,
+    #fef9c3 48%,
+    #84cc16 60%,
+    #d97706 100%
+  );
+  background-size: 260% 100%;
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
+  filter: drop-shadow(0 1px 4px rgba(234, 179, 8, 0.28));
+  animation: baliza-velocity-streak 2.4s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+
+/* 2. Eclipse Lunar — color sólido profundo + corona lunar respirando */
+.baliza-name-eclipse {
+  color: #312e81;
   font-weight: 800;
-  animation: baliza-shimmer 3.5s ease infinite;
+  letter-spacing: 0.03em;
+  animation: baliza-eclipse-corona 3s ease-in-out infinite;
 }
 
 :root[data-theme="dark"] .baliza-name-eclipse {
-  background: linear-gradient(90deg, #818cf8, #e2e8f0, #a78bfa, #818cf8);
-  background-size: 200% auto;
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
+  color: #e0e7ff;
 }
 
+/* 3. Flash Paparazzi — oro cálido con destello rápido de obturador */
 .baliza-name-flash {
-  background: linear-gradient(90deg, #b45309, #f59e0b, #fde047, #b45309);
-  background-size: 200% auto;
+  font-weight: 800;
+  background: linear-gradient(
+    105deg,
+    #92400e 0%,
+    #d97706 42%,
+    #ffffff 50%,
+    #fbbf24 58%,
+    #b45309 100%
+  );
+  background-size: 280% 100%;
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
-  font-weight: 800;
-  animation: baliza-shimmer 2.6s linear infinite;
+  animation: baliza-flash-sweep 3.2s ease-in-out infinite;
 }
 
+:root[data-theme="dark"] .baliza-name-flash {
+  background: linear-gradient(
+    105deg,
+    #f59e0b 0%,
+    #fde047 42%,
+    #ffffff 50%,
+    #fbbf24 58%,
+    #f59e0b 100%
+  );
+  background-size: 280% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* 4. Brote Radiactivo — verde fosforescente con pulso biohazard */
 .baliza-name-biohazard {
-  background: linear-gradient(90deg, #15803d, #84cc16, #22c55e, #15803d);
-  background-size: 200% auto;
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
+  color: #15803d;
   font-weight: 800;
-  filter: drop-shadow(0 0 5px rgba(132, 204, 22, 0.32));
-  animation: baliza-shimmer 2.6s linear infinite;
+  letter-spacing: 0.015em;
+  text-shadow: 0 0 1px rgba(163, 230, 53, 0.8), 0 0 8px rgba(74, 222, 128, 0.45);
+  animation: baliza-bio-pulse 1.9s ease-in-out infinite;
 }
 
+:root[data-theme="dark"] .baliza-name-biohazard {
+  color: #a3e635;
+}
+
+/* 5. Mutación Dual — corte diagonal lima/magenta con contraste nítido */
 .baliza-name-toxic {
-  background: linear-gradient(90deg, #16a34a, #84cc16, #db2777, #16a34a);
-  background-size: 200% auto;
+  font-weight: 800;
+  background: linear-gradient(130deg, #16a34a 0%, #84cc16 46%, #ec4899 54%, #be185d 100%);
+  background-size: 190% 190%;
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
-  font-weight: 800;
-  animation: baliza-shimmer 3s linear infinite;
+  animation: baliza-shimmer 2.8s ease-in-out infinite;
 }
 
+/* 6. Glitch de Tensión — separación cromática RGB + micro-sacudida */
 .baliza-name-chaos {
-  background: linear-gradient(90deg, #e11d48, #f97316, #f43f5e);
-  background-size: 180% auto;
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  font-weight: 800;
-  filter: drop-shadow(0 0 6px rgba(244, 63, 94, 0.3));
-  animation: baliza-shimmer 2.2s linear infinite;
+  display: inline-block;
+  color: #dc2626;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  animation: baliza-glitch-jitter 2.6s steps(1, end) infinite;
 }
 
+:root[data-theme="dark"] .baliza-name-chaos {
+  color: #fb7185;
+}
+
+/* 7. Filo Carmesí — reflejo de hoja afilada en carmesí y plata */
 .baliza-name-ruby {
-  background: linear-gradient(90deg, #be123c, #ec4899, #fb7185, #be123c);
-  background-size: 200% auto;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  background: linear-gradient(
+    125deg,
+    #881337 0%,
+    #e11d48 38%,
+    #ffe4e6 50%,
+    #f43f5e 62%,
+    #9f1239 100%
+  );
+  background-size: 240% 100%;
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
-  font-weight: 800;
-  animation: baliza-shimmer 2.8s linear infinite;
+  animation: baliza-shimmer 3.2s ease infinite;
 }
 
+/* 8. Espejismo Espectral — estela translúcida violeta-celeste */
 .baliza-name-ghost {
-  background: linear-gradient(90deg, #6366f1, #06b6d4, #a855f7, #6366f1);
-  background-size: 200% auto;
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  font-weight: 800;
-  animation: baliza-shimmer 3.8s ease infinite;
+  color: #5b21b6;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  animation: baliza-ghost-drift 3.4s ease-in-out infinite;
 }
 
+:root[data-theme="dark"] .baliza-name-ghost {
+  color: #c4b5fd;
+}
+
+/* 9. Brasa Viva — gradiente vertical de llama ascendente con parpadeo */
 .baliza-name-inferno {
-  background: linear-gradient(90deg, #dc2626, #f59e0b, #ea580c, #dc2626);
-  background-size: 200% auto;
+  font-weight: 900;
+  background: linear-gradient(180deg, #fde047 0%, #f97316 48%, #b91c1c 100%);
+  background-size: 100% 180%;
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
-  font-weight: 800;
-  filter: drop-shadow(0 0 5px rgba(245, 158, 11, 0.35));
-  animation: baliza-shimmer 2.4s linear infinite;
+  animation: baliza-ember-flicker 1.7s ease-in-out infinite;
 }
 
+/* 10. Acero Templado — cromo cepillado oscuro con brillo metálico */
 .baliza-name-reaper {
-  background: linear-gradient(90deg, #991b1b, #475569, #e11d48, #991b1b);
-  background-size: 200% auto;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  background: linear-gradient(
+    135deg,
+    #0f172a 0%,
+    #475569 35%,
+    #f8fafc 49%,
+    #9f1239 62%,
+    #1e293b 100%
+  );
+  background-size: 240% 100%;
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
-  font-weight: 800;
-  animation: baliza-shimmer 3.2s linear infinite;
+  animation: baliza-shimmer 3.6s linear infinite;
 }
 
 :root[data-theme="dark"] .baliza-name-reaper {
-  background: linear-gradient(90deg, #fb7185, #e2e8f0, #f43f5e, #fb7185);
-  background-size: 200% auto;
+  background: linear-gradient(
+    135deg,
+    #94a3b8 0%,
+    #f8fafc 36%,
+    #fda4af 50%,
+    #cbd5e1 64%,
+    #64748b 100%
+  );
+  background-size: 240% 100%;
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
 }
 
+/* 11. Estudio Platino (100% personalizable por el usuario; fallback prismático) */
 .baliza-name-platinum {
-  background: linear-gradient(90deg, #f59e0b, #06b6d4, #ec4899, #10b981, #f59e0b);
-  background-size: 260% auto;
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  font-weight: 800;
-  filter: drop-shadow(0 0 6px rgba(6, 182, 212, 0.28));
-  animation: baliza-shimmer 3s linear infinite;
+  display: inline-block;
+  font-weight: 900;
 }
 
-/* Efectos de icono (marcos y halos alrededor del avatar) */
-.baliza-avatar-storm {
-  box-shadow: 0 0 0 2px #7c3aed, 0 0 14px rgba(124, 58, 237, 0.65);
-  animation: baliza-ring-pulse 2.2s ease-in-out infinite;
+.baliza-plat-anim-shimmer {
+  animation: baliza-shimmer var(--plat-dur, 2.8s) linear infinite;
 }
 
-.baliza-avatar-immune {
-  box-shadow: 0 0 0 2px #06b6d4, 0 0 0 4px rgba(16, 185, 129, 0.45), 0 0 14px rgba(6, 182, 212, 0.65);
-  animation: baliza-ring-pulse 2.1s ease-in-out infinite;
+.baliza-plat-anim-wave {
+  animation: baliza-velocity-streak var(--plat-dur, 2.5s) cubic-bezier(0.22, 1, 0.36, 1) infinite;
 }
 
-.baliza-avatar-beacon {
-  box-shadow: 0 0 0 2px #10b981, 0 0 14px rgba(16, 185, 129, 0.7);
-  animation: baliza-ring-pulse 2s ease-in-out infinite;
+@keyframes baliza-plat-pulse-kf {
+  0%, 100% {
+    transform: scale(1);
+    filter: drop-shadow(0 0 3px var(--plat-glow, rgba(6, 182, 212, 0.45)));
+  }
+  50% {
+    transform: scale(1.025);
+    filter: drop-shadow(0 0 12px var(--plat-glow, rgba(6, 182, 212, 0.85)));
+  }
 }
 
-.baliza-avatar-sonar {
-  box-shadow: 0 0 0 2px #06b6d4, 0 0 14px rgba(6, 182, 212, 0.7);
-  animation: baliza-ring-pulse 1.8s ease-in-out infinite;
+.baliza-plat-anim-pulse {
+  animation: baliza-plat-pulse-kf var(--plat-dur, 2.2s) ease-in-out infinite;
 }
 
-.baliza-avatar-untouchable {
-  box-shadow: 0 0 0 2px #059669, 0 0 0 4px rgba(110, 231, 183, 0.55), 0 0 16px rgba(16, 185, 129, 0.65);
-  animation: baliza-ring-pulse 2.4s ease-in-out infinite;
+@keyframes baliza-plat-glitch-kf {
+  0%, 84%, 100% {
+    transform: translate(0, 0);
+    filter: drop-shadow(-1.5px 0 var(--plat-c1, #06b6d4)) drop-shadow(1.5px 0 var(--plat-c2, #ec4899));
+  }
+  87% {
+    transform: translate(-1.5px, 0.5px);
+    filter: drop-shadow(-3px 0 var(--plat-c1, #06b6d4)) drop-shadow(3px 0 var(--plat-c2, #ec4899));
+  }
+  91% {
+    transform: translate(1.5px, -0.5px);
+    filter: drop-shadow(2px 0 var(--plat-c2, #ec4899)) drop-shadow(-2px 0 var(--plat-c3, #f59e0b));
+  }
 }
 
-.baliza-avatar-compass {
-  box-shadow: 0 0 0 2px #d97706, 0 0 13px rgba(245, 158, 11, 0.65);
+.baliza-plat-anim-glitch {
+  animation: baliza-plat-glitch-kf var(--plat-dur, 2.4s) steps(1, end) infinite;
 }
 
-.baliza-avatar-bloodhound {
-  box-shadow: 0 0 0 2px #ea580c, 0 0 14px rgba(234, 88, 12, 0.7);
-  animation: baliza-ring-pulse 2.4s ease-in-out infinite;
+@keyframes baliza-plat-neon-kf {
+  0%, 100% {
+    filter: drop-shadow(0 0 4px var(--plat-glow, #06b6d4)) brightness(1);
+  }
+  50% {
+    filter: drop-shadow(0 0 13px var(--plat-glow, #06b6d4)) brightness(1.14);
+  }
 }
 
-.baliza-avatar-crown {
-  box-shadow: 0 0 0 2px #eab308, 0 0 0 4px rgba(168, 85, 247, 0.55), 0 0 16px rgba(234, 179, 8, 0.75);
-  animation: baliza-ring-pulse 2.2s ease-in-out infinite;
+.baliza-plat-anim-neon {
+  animation: baliza-plat-neon-kf var(--plat-dur, 1.9s) ease-in-out infinite;
 }
 
-.baliza-avatar-lightning {
-  box-shadow: 0 0 0 2px #2563eb, 0 0 15px rgba(59, 130, 246, 0.75);
-  animation: baliza-ring-pulse 1.5s ease-in-out infinite;
+/* ============================================================================
+   Efectos geométricos y animados de icono (PlayerAvatar)
+   ============================================================================ */
+@keyframes baliza-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
-.baliza-avatar-platinum {
-  box-shadow: 0 0 0 2px #f59e0b, 0 0 0 4px rgba(6, 182, 212, 0.65), 0 0 18px rgba(245, 158, 11, 0.75);
-  animation: baliza-ring-pulse 2s ease-in-out infinite;
+@keyframes baliza-spin-rev {
+  from {
+    transform: rotate(360deg);
+  }
+  to {
+    transform: rotate(0deg);
+  }
 }
+
+@keyframes baliza-ping-wave {
+  0% {
+    transform: scale(0.92);
+    opacity: 0.85;
+  }
+  75%, 100% {
+    transform: scale(1.42);
+    opacity: 0;
+  }
+}
+
+@keyframes baliza-float-soft {
+  0%, 100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-2.5px);
+  }
+}
+
+@keyframes baliza-spark-pulse {
+  0%, 100% {
+    opacity: 0.72;
+    transform: scale(0.98) rotate(0deg);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.06) rotate(180deg);
+  }
+}
+
+.baliza-spin {
+  animation: baliza-spin var(--baliza-spin-dur, 3.6s) linear infinite;
+}
+
+.baliza-spin-rev {
+  animation: baliza-spin-rev var(--baliza-spin-dur, 4.4s) linear infinite;
+}
+
+.baliza-ping-wave {
+  animation: baliza-ping-wave var(--baliza-spin-dur, 2s) cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+.baliza-float-soft {
+  animation: baliza-float-soft 2.6s ease-in-out infinite;
+}
+
+.baliza-spark-spin {
+  animation: baliza-spin 1.6s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [class*="baliza-name-"],
+  [class*="baliza-plat-anim-"],
+  .baliza-spin,
+  .baliza-spin-rev,
+  .baliza-ping-wave,
+  .baliza-float-soft,
+  .baliza-spark-spin {
+    animation: none !important;
+  }
+}
+

@@ -154,6 +154,7 @@ export const ProfileCustomizer: React.FC<ProfileCustomizerProps> = ({
               size="md"
               name={profile.name || 'Jugador'}
               avatarEffectId={equippedCosmetics.avatarEffectId}
+              platinumAvatar={equippedCosmetics.platinumAvatar}
             />
           </button>
 

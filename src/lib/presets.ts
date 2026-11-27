@@ -129,7 +129,7 @@ export const BUILT_IN_PRESETS: RulePreset[] = [
   {
     id: 'builtin_blackout',
     name: '🌑 Apagón Total',
-    description: 'Niebla cerrada de 35 m, sin radar ni rastros ni chat. Sobrevive a ciegas.',
+    description: 'Radio de visibilidad muy bajo (20 m): solo os veis entre sí si estáis muy cerca.',
     builtIn: true,
     rules: {
       ...structuredClone(DEFAULT_RULES),
@@ -139,7 +139,7 @@ export const BUILT_IN_PRESETS: RulePreset[] = [
       modifiers: {
         ...structuredClone(DEFAULT_RULES.modifiers),
         fogEnabled: true,
-        fogRadiusM: 35,
+        fogRadiusM: 20,
         radarEnabled: false,
         trailEnabled: false,
         hotColdEnabled: false,

@@ -1,6 +1,10 @@
 import { PlayerCosmetics } from '../types/game';
 import { loadStatsAndAchievements } from './achievements';
-import { sanitizeEquippedCosmetics } from './cosmetics';
+import {
+  sanitizeEquippedCosmetics,
+  sanitizePlatinumAvatarCustomization,
+  sanitizePlatinumNameCustomization,
+} from './cosmetics';
 import { safeLocalGet, safeLocalSet } from './safeStorage';
 import { isSecretSandboxUnlocked } from './soloSandbox';
 
@@ -23,6 +27,7 @@ export interface AppPreferences {
   vibrationEnabled: boolean;
   reducedMotion: boolean;
   equippedCosmetics: PlayerCosmetics;
+  debugCosmetics?: PlayerCosmetics;
 }
 
 export const DEFAULT_PREFERENCES: AppPreferences = {
@@ -36,6 +41,7 @@ export const DEFAULT_PREFERENCES: AppPreferences = {
   vibrationEnabled: true,
   reducedMotion: false,
   equippedCosmetics: {},
+  debugCosmetics: {},
 };
 
 const PREFS_STORAGE_KEY = 'baliza_app_preferences_v1';
@@ -56,13 +62,23 @@ function normalizeCosmeticsRaw(raw: unknown): PlayerCosmetics {
   if (typeof obj.avatarEffectId === 'string' && obj.avatarEffectId) {
     out.avatarEffectId = obj.avatarEffectId;
   }
+  if (obj.platinumName && typeof obj.platinumName === 'object') {
+    out.platinumName = sanitizePlatinumNameCustomization(
+      obj.platinumName as PlayerCosmetics['platinumName']
+    );
+  }
+  if (obj.platinumAvatar && typeof obj.platinumAvatar === 'object') {
+    out.platinumAvatar = sanitizePlatinumAvatarCustomization(
+      obj.platinumAvatar as PlayerCosmetics['platinumAvatar']
+    );
+  }
   return out;
 }
 
 export function loadPreferences(): AppPreferences {
   try {
     const raw = safeLocalGet(PREFS_STORAGE_KEY);
-    if (!raw) return { ...DEFAULT_PREFERENCES, equippedCosmetics: {} };
+    if (!raw) return { ...DEFAULT_PREFERENCES, equippedCosmetics: {}, debugCosmetics: {} };
     const parsed = JSON.parse(raw) as Partial<AppPreferences>;
     return {
       theme:
@@ -96,9 +112,10 @@ export function loadPreferences(): AppPreferences {
           ? parsed.reducedMotion
           : DEFAULT_PREFERENCES.reducedMotion,
       equippedCosmetics: normalizeCosmeticsRaw(parsed.equippedCosmetics),
+      debugCosmetics: normalizeCosmeticsRaw(parsed.debugCosmetics),
     };
   } catch {
-    return { ...DEFAULT_PREFERENCES, equippedCosmetics: {} };
+    return { ...DEFAULT_PREFERENCES, equippedCosmetics: {}, debugCosmetics: {} };
   }
 }
 
@@ -108,11 +125,24 @@ export function getEquippedCosmetics(): PlayerCosmetics {
   const unlockedIds = new Set(
     achievements.filter((a) => a.unlocked).map((a) => a.id)
   );
-  return sanitizeEquippedCosmetics(
-    prefs.equippedCosmetics,
-    unlockedIds,
-    isSecretSandboxUnlocked()
-  );
+  const debugMode = isSecretSandboxUnlocked();
+  const sourceCosmetics = debugMode
+    ? {
+        ...(prefs.debugCosmetics || {}),
+        ...(prefs.equippedCosmetics || {}),
+        ...(prefs.equippedCosmetics?.nameEffectId
+          ? {}
+          : prefs.debugCosmetics?.nameEffectId
+          ? { nameEffectId: prefs.debugCosmetics.nameEffectId }
+          : {}),
+        ...(prefs.equippedCosmetics?.avatarEffectId
+          ? {}
+          : prefs.debugCosmetics?.avatarEffectId
+          ? { avatarEffectId: prefs.debugCosmetics.avatarEffectId }
+          : {}),
+      }
+    : prefs.equippedCosmetics;
+  return sanitizeEquippedCosmetics(sourceCosmetics, unlockedIds, debugMode);
 }
 
 export function applyPreferencesToDocument(prefs: AppPreferences): void {
@@ -124,16 +154,45 @@ export function applyPreferencesToDocument(prefs: AppPreferences): void {
 }
 
 export function savePreferences(prefs: AppPreferences): AppPreferences {
+  const normalizedEquipped = normalizeCosmeticsRaw(prefs.equippedCosmetics);
+  const existingDebug = normalizeCosmeticsRaw(prefs.debugCosmetics);
+  const debugMode = isSecretSandboxUnlocked();
   const normalized: AppPreferences = {
     ...prefs,
     musicVolume: clampVolume(prefs.musicVolume, DEFAULT_PREFERENCES.musicVolume),
     sfxVolume: clampVolume(prefs.sfxVolume, DEFAULT_PREFERENCES.sfxVolume),
-    equippedCosmetics: normalizeCosmeticsRaw(prefs.equippedCosmetics),
+    equippedCosmetics: normalizedEquipped,
+    debugCosmetics: debugMode ? normalizedEquipped : existingDebug,
   };
   safeLocalSet(PREFS_STORAGE_KEY, JSON.stringify(normalized));
   applyPreferencesToDocument(normalized);
   listeners.forEach((cb) => cb(normalized));
   return normalized;
+}
+
+export function syncDebugCosmeticsOnToggle(unlocked: boolean): void {
+  const prefs = loadPreferences();
+  if (unlocked && prefs.debugCosmetics) {
+    const hasDebugSelection =
+      Boolean(prefs.debugCosmetics.nameEffectId) ||
+      Boolean(prefs.debugCosmetics.avatarEffectId) ||
+      Boolean(prefs.debugCosmetics.platinumName) ||
+      Boolean(prefs.debugCosmetics.platinumAvatar);
+    if (hasDebugSelection) {
+      const merged: PlayerCosmetics = {
+        ...prefs.equippedCosmetics,
+        ...prefs.debugCosmetics,
+      };
+      const updated: AppPreferences = {
+        ...prefs,
+        equippedCosmetics: merged,
+      };
+      safeLocalSet(PREFS_STORAGE_KEY, JSON.stringify(updated));
+      listeners.forEach((cb) => cb(updated));
+      return;
+    }
+  }
+  listeners.forEach((cb) => cb(prefs));
 }
 
 export function refreshPreferencesFromStorage(): void {

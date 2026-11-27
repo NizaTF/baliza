@@ -122,6 +122,11 @@ import {
   stepBotVectors,
   subscribeSecretSandbox,
 } from '../lib/soloSandbox';
+import {
+  canSpectatorPerformAction,
+  shouldDecoyBeVisibleOnMap,
+  shouldPlayerBeVisibleOnMap,
+} from '../lib/spectator';
 import { EliminationOverlay } from './EliminationOverlay';
 import { InfectionOverlay } from './InfectionOverlay';
 import { MatchChatDrawer } from './MatchChatDrawer';
@@ -244,6 +249,7 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
   const infectedMap = match?.infected || {};
   const myCaughtRecord = caughtMap[currentPlayerId];
   const myInfectedRecord = infectedMap[currentPlayerId];
+  const isSpectator = Boolean(myCaughtRecord);
   const stormGraceMaxSec = room.rules.stormGraceSec ?? 30;
   const timeVictoryEnabled = room.rules.timeVictoryEnabled ?? true;
   const locationGuardEnabled = room.rules.requireLocationGuard ?? true;
@@ -251,6 +257,7 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
   const photoChallenge = match?.photoChallenge ?? null;
   const matchWinner = match?.winner ?? null;
   const matchWinReason = match?.winReason ?? null;
+  const isActiveSpectator = Boolean(isSpectator && !matchWinner);
 
   // Modificadores de partida
   const mods = room.rules.modifiers;
@@ -267,7 +274,7 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
   const hunterPhotoWindowSec = mods?.hunterPhotoWindowSec ?? 60;
   const hunterPhotoDelaySec = mods?.hunterPhotoDelaySec ?? 15;
   const fogEnabled = Boolean(mods?.fogEnabled);
-  const fogRadiusM = mods?.fogRadiusM ?? 60;
+  const fogRadiusM = mods?.fogRadiusM ?? 25;
   const radarEnabled = Boolean(mods?.radarEnabled);
   const radarIntervalSec = mods?.radarIntervalSec ?? 20;
   const radarRangeM = mods?.radarRangeM ?? 300;
@@ -349,6 +356,9 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
   const [quickScanUntilMs, setQuickScanUntilMs] = useState(0);
   const [resultDismissed, setResultDismissed] = useState(false);
   const [resultWaitDone, setResultWaitDone] = useState(true);
+  const [spectatorFollowId, setSpectatorFollowId] = useState<string | null>(null);
+  const [showSpectatorCamMenu, setShowSpectatorCamMenu] = useState(false);
+  const [spectatorAntiCheatNotice, setSpectatorAntiCheatNotice] = useState<string | null>(null);
   const [bgKeepAliveOn, setBgKeepAliveOn] = useState(() =>
     isBackgroundKeepAliveActive()
   );
@@ -440,6 +450,7 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
   const fogConfigRef = useRef({ enabled: fogEnabled, radiusM: fogRadiusM });
   const radarRangeRef = useRef(radarRangeM);
   const isPhaseActiveForEffectsRef = useRef(false);
+  const isSpectatorRef = useRef(false);
   const stormEliminationSentRef = useRef(false);
   const locEliminationSentRef = useRef(false);
   const winnerSentRef = useRef(false);
@@ -497,6 +508,7 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
   startedAtRef.current = match?.startedAt;
   myRoleRef.current = myRole;
   myPosRef.current = myPos;
+  isSpectatorRef.current = isSpectator;
   clockOffsetRef.current = clockOffsetMs;
   fogConfigRef.current = { enabled: fogEnabled, radiusM: fogRadiusM };
   radarRangeRef.current = radarRangeM;
@@ -582,6 +594,55 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
     safeSessionSet(seenKey, '1');
     setShowEliminationOverlay(true);
   }, [myCaughtAt, room.id, currentPlayerId]);
+
+  // Anti-trampas automático al pasar a Modo Espectador
+  useEffect(() => {
+    if (!isSpectator) {
+      setSpectatorFollowId(null);
+      setSpectatorAntiCheatNotice(null);
+      return;
+    }
+    setPocketCompassOn(false);
+    setPocketVoiceOn(false);
+    setConfirmCatchId(null);
+    if (!sandboxUnlocked) {
+      setJoystickActive(false);
+    }
+  }, [isSpectator, sandboxUnlocked]);
+
+  useEffect(() => {
+    if (!isActiveSpectator || !spectatorFollowId) return;
+    if (caughtMap[spectatorFollowId]) {
+      setSpectatorFollowId(null);
+      return;
+    }
+    const targetLoc = otherLocations[spectatorFollowId];
+    if (targetLoc && mapRef.current) {
+      mapRef.current.panTo([targetLoc.lat, targetLoc.lng], { animate: true });
+    }
+  }, [isActiveSpectator, spectatorFollowId, caughtMap, otherLocations]);
+
+  useEffect(() => {
+    if (!isActiveSpectator) return;
+    const warnAntiCheat = (msg: string) => {
+      setSpectatorAntiCheatNotice(msg);
+      window.setTimeout(() => {
+        setSpectatorAntiCheatNotice((cur) => (cur === msg ? null : cur));
+      }, 4200);
+    };
+    const onKeyDown = (ev: KeyboardEvent) => {
+      const lower = ev.key.toLowerCase();
+      if (
+        ev.key === 'PrintScreen' ||
+        ((ev.ctrlKey || ev.metaKey) && lower === 'p') ||
+        (ev.metaKey && ev.shiftKey && (lower === 's' || lower === '3' || lower === '4'))
+      ) {
+        warnAntiCheat('Anti-trampas: no captures ni compartas posiciones con los vivos.');
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isActiveSpectator]);
 
   // Detectar nuevas eliminaciones y avisar a toda la sala
   useEffect(() => {
@@ -1558,10 +1619,10 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
       }
     });
 
-    if (myRole === 'seeker') {
+    if (myRole === 'seeker' || isSpectator) {
       setRadarBlips(detected);
     }
-    playRadarSweepPing(myRole === 'seeker' ? detected.length : 0);
+    playRadarSweepPing(myRole === 'seeker' || isSpectator ? detected.length : 0);
 
     const clearTimer = window.setTimeout(() => {
       setRadarBlips((prev) => prev.filter((b) => Date.now() - b.atMs < 4600));
@@ -1586,13 +1647,14 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
     otherLocations,
     caughtMap,
     myRole,
+    isSpectator,
     stealthStillEnabled,
     isMyStealthStill,
   ]);
 
   // Termómetro Frío / Caliente: distancia al rival activo más cercano sin revelar dirección
   const hotColdInfo = useMemo(() => {
-    if (!hotColdEnabled || !isHuntPhase || matchWinner || !myPos) return null;
+    if (!hotColdEnabled || !isHuntPhase || matchWinner || isSpectator || !myPos) return null;
     const now = Date.now();
     let minDist = Infinity;
     players.forEach((p) => {
@@ -2003,6 +2065,9 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
     ).addTo(stormGroup);
 
     mapRef.current = map;
+    map.on('dragstart', () => {
+      setSpectatorFollowId(null);
+    });
     trailLayerRef.current = trailGroup;
     stormMaskRef.current = maskPoly;
     stormBorderRef.current = borderCircle;
@@ -2106,14 +2171,19 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
         const fogGroup = fogLayerRef.current;
         const fogCfg = fogConfigRef.current;
         if (fogGroup) {
-          if (fogCfg.enabled && isPhaseActiveForEffectsRef.current && pos) {
+          if (
+            fogCfg.enabled &&
+            isPhaseActiveForEffectsRef.current &&
+            pos &&
+            !isSpectatorRef.current
+          ) {
             const rings = getStormMaskRings(pos.lat, pos.lng, fogCfg.radiusM, 64);
             if (!fogMaskRef.current) {
               fogMaskRef.current = L.polygon(rings, {
                 color: 'transparent',
                 weight: 0,
                 fillColor: '#0F172A',
-                fillOpacity: 0.88,
+                fillOpacity: 0.93,
                 interactive: false,
               }).addTo(fogGroup);
             } else {
@@ -2312,7 +2382,7 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
 
       const valid = points.filter((pt) => {
         if (pt.at < cutoff) return false;
-        if (fogEnabled && myPos) {
+        if (!isSpectator && fogEnabled && myPos) {
           return distanceMeters(myPos.lat, myPos.lng, pt.lat, pt.lng) <= fogRadiusM;
         }
         return true;
@@ -2359,9 +2429,10 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
     fogEnabled,
     fogRadiusM,
     myPos,
+    isSpectator,
   ]);
 
-  // Dibujar señales de sonar detectadas por el Modo Radar (para buscadores)
+  // Dibujar señales de sonar detectadas por el Modo Radar (buscadores o espectadores)
   useEffect(() => {
     const radarGroup = radarLayerRef.current;
     if (!radarGroup) return;
@@ -2371,12 +2442,17 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
         radarGroup.removeLayer(layer);
       }
     });
-    if (!radarEnabled || myRole !== 'seeker') return;
+    if (!radarEnabled || (!isSpectator && myRole !== 'seeker')) return;
 
     const now = Date.now();
     radarBlips.forEach((blip) => {
       if (now - blip.atMs > 4600) return;
-      if (fogEnabled && myPos && distanceMeters(myPos.lat, myPos.lng, blip.lat, blip.lng) > fogRadiusM) {
+      if (
+        !isSpectator &&
+        fogEnabled &&
+        myPos &&
+        distanceMeters(myPos.lat, myPos.lng, blip.lat, blip.lng) > fogRadiusM
+      ) {
         return;
       }
       const pingIcon = L.divIcon({
@@ -2390,7 +2466,7 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
       });
       L.marker([blip.lat, blip.lng], { icon: pingIcon, interactive: false }).addTo(radarGroup);
     });
-  }, [radarBlips, radarEnabled, myRole, fogEnabled, fogRadiusM, myPos]);
+  }, [radarBlips, radarEnabled, myRole, isSpectator, fogEnabled, fogRadiusM, myPos]);
 
   // Dibujar otros jugadores visibles y señuelos activos
   useEffect(() => {
@@ -2403,6 +2479,8 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
     const isClassicHintActive = Boolean(
       classicHintsEnabled && isHuntPhase && classicHintRevealUntilMs > now
     );
+
+    const maxStaleMs = isSpectator ? 60000 : 35000;
 
     players.forEach((p) => {
       if (p.id === currentPlayerId) return;
@@ -2417,18 +2495,11 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
       const isLocOff =
         locationGuardEnabled &&
         (peerLocationStatuses[p.id] === 'disabled' || Boolean(loc.locationDisabled));
-      if (!isLocOff && now - loc.updatedAt > 35000) return;
+      if (!isLocOff && now - loc.updatedAt > maxStaleMs) return;
 
-      // Modo Niebla: solo ves jugadores dentro de X metros de tu ubicación
-      if (fogEnabled) {
-        if (!myPos) return;
-        const dist = distanceMeters(myPos.lat, myPos.lng, loc.lat, loc.lng);
-        if (dist > fogRadiusM) return;
-      }
-
-      const allowedByRule =
-        (myRole === 'hider' && otherRole === 'seeker' && hidersCanSeeSeekers) ||
-        (myRole === 'seeker' && otherRole === 'hider' && seekersCanSeeHiders);
+      const distToOtherM = myPos
+        ? distanceMeters(myPos.lat, myPos.lng, loc.lat, loc.lng)
+        : null;
       const isCampExposed = Boolean(antiCampEnabled && loc.campExposed);
       const isClassicHintRevealed = Boolean(
         !isCloaked &&
@@ -2438,15 +2509,30 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
       );
 
       if (
-        !allowedByRule &&
-        !loc.stormExposed &&
-        !isLocOff &&
-        !isCampExposed &&
-        !isClassicHintRevealed
+        !shouldPlayerBeVisibleOnMap({
+          isSpectator,
+          myRole,
+          otherRole,
+          hidersCanSeeSeekers,
+          seekersCanSeeHiders,
+          stormExposed: Boolean(loc.stormExposed),
+          isLocOff,
+          isCampExposed,
+          isClassicHintRevealed,
+          fogEnabled,
+          distanceToOtherM: distToOtherM,
+          fogRadiusM,
+        })
       ) {
         return;
       }
 
+      const allowedByRule =
+        isSpectator ||
+        (myRole === 'hider' && otherRole === 'seeker' && hidersCanSeeSeekers) ||
+        (myRole === 'seeker' && otherRole === 'hider' && seekersCanSeeHiders);
+
+      const isFollowedBySpectator = isSpectator && spectatorFollowId === p.id;
       const borderColor = isLocOff
         ? '#DC2626'
         : isCampExposed
@@ -2464,6 +2550,10 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
       const badgeLabel = escapeHtml(
         isLocOff
           ? `${p.name} · GPS apagado`
+          : isSpectator
+          ? `${otherRole === 'seeker' ? '👁️' : isCloaked ? '🫥' : '🛡️'} ${p.name}${
+              loc.stormExposed ? ' · Tormenta' : isCampExposed ? ' · Quieto' : ''
+            }`
           : isCampExposed
           ? `${p.name} · Quieto`
           : loc.stormExposed
@@ -2477,21 +2567,30 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
           : p.name
       );
       const safeEmoji = escapeHtml(p.emoji);
+      const followRing = isFollowedBySpectator
+        ? 'box-shadow:0 0 0 4px rgba(245,158,11,0.75), 0 3px 10px rgba(15,23,42,0.35);'
+        : 'box-shadow:0 3px 10px rgba(15,23,42,0.3);';
 
       const icon = L.divIcon({
         className: 'baliza-other-player-marker',
         html: `<div style="display:flex;flex-direction:column;align-items:center;transform:translate(-50%,-50%);">
-          <div style="display:flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:9999px;background:#ffffff;border:3px solid ${borderColor};box-shadow:0 3px 10px rgba(15,23,42,0.3);font-size:18px;">${safeEmoji}</div>
+          <div style="display:flex;align-items:center;justify-content:center;width:36px;height:36px;border-radius:9999px;background:#ffffff;border:3px solid ${borderColor};${followRing}font-size:18px;">${safeEmoji}</div>
           <span style="margin-top:3px;padding:1px 6px;border-radius:9999px;background:${borderColor};color:#ffffff;font-size:10px;font-weight:700;white-space:nowrap;box-shadow:0 1px 4px rgba(0,0,0,0.25);">${badgeLabel}</span>
         </div>`,
         iconSize: [0, 0],
         iconAnchor: [0, 0],
       });
 
-      L.marker([loc.lat, loc.lng], {
+      const marker = L.marker([loc.lat, loc.lng], {
         icon,
-        interactive: false,
+        interactive: isSpectator,
       }).addTo(othersGroup);
+      if (isSpectator) {
+        marker.on('click', () => {
+          setSpectatorFollowId((prev) => (prev === p.id ? null : p.id));
+          mapRef.current?.panTo([loc.lat, loc.lng], { animate: true });
+        });
+      }
     });
 
     // Señuelos activos desplegados por fugitivos
@@ -2500,17 +2599,30 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
         (d) => new Date(d.expiresAt).getTime() > syncedNowMs
       );
       activeDecoys.forEach((decoy) => {
-        if (fogEnabled && myPos && distanceMeters(myPos.lat, myPos.lng, decoy.lat, decoy.lng) > fogRadiusM) {
+        const distToDecoyM = myPos
+          ? distanceMeters(myPos.lat, myPos.lng, decoy.lat, decoy.lng)
+          : null;
+        const isOwner = decoy.ownerPlayerId === currentPlayerId;
+        if (
+          !shouldDecoyBeVisibleOnMap({
+            isSpectator,
+            myRole,
+            isOwner,
+            fogEnabled,
+            distanceToDecoyM: distToDecoyM,
+            fogRadiusM,
+          })
+        ) {
           return;
         }
-        const isOwner = decoy.ownerPlayerId === currentPlayerId;
-        if (myRole !== 'seeker' && !isOwner) return;
 
-        const decoyColor = isOwner ? '#7C3AED' : '#0284C7';
-        const decoyBadge = isOwner
+        const decoyColor = isOwner || isSpectator ? '#7C3AED' : '#0284C7';
+        const decoyBadge = isSpectator
+          ? `🎭 Señuelo (${escapeHtml(decoy.label)})`
+          : isOwner
           ? '🎭 Señuelo activo'
           : `🧭 ${escapeHtml(decoy.label)}`;
-        const decoyEmoji = isOwner ? '🎭' : '🏃';
+        const decoyEmoji = isOwner || isSpectator ? '🎭' : '🏃';
 
         const icon = L.divIcon({
           className: 'baliza-decoy-marker',
@@ -2533,6 +2645,8 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
     match?.activeDecoys,
     syncedNowMs,
     myRole,
+    isSpectator,
+    spectatorFollowId,
     hidersCanSeeSeekers,
     seekersCanSeeHiders,
     caughtMap,
@@ -2587,6 +2701,7 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
   }, [myPos, myRole, myCaughtRecord]);
 
   const handleCenterMyGps = () => {
+    setSpectatorFollowId(null);
     if (myPos && mapRef.current) {
       mapRef.current.setView([myPos.lat, myPos.lng], 16, { animate: true });
       return;
@@ -2615,6 +2730,7 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
   };
 
   const handleCenterZone = () => {
+    setSpectatorFollowId(null);
     const map = mapRef.current;
     if (!map) return;
     const zoom =
@@ -2638,6 +2754,9 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
 
   const handleToggleJoystick = () => {
     if (!allowTestJoystick) return;
+    if (!canSpectatorPerformAction('joystick', { isSpectator, sandboxUnlocked })) {
+      return;
+    }
     setJoystickActive((prev) => {
       const next = !prev;
       if (next) {
@@ -2723,6 +2842,9 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
     targetId: string,
     byId: string | 'storm'
   ) => {
+    if (!canSpectatorPerformAction('capture', { isSpectator, sandboxUnlocked })) {
+      return;
+    }
     unlockRetroAudio();
     setBusyCatchId(targetId);
     try {
@@ -2734,6 +2856,15 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
   };
 
   const handleUndo = async (targetId: string) => {
+    if (
+      !canSpectatorPerformAction('undo_elimination', {
+        isSpectator,
+        isSelf: targetId === currentPlayerId,
+        sandboxUnlocked,
+      })
+    ) {
+      return;
+    }
     setBusyCatchId(targetId);
     try {
       await onUndoCaught(targetId);
@@ -3444,7 +3575,7 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
 
   // Caza por Objetivos (Contratos)
   const myContractTargetId =
-    contractHuntEnabled && myRole === 'seeker'
+    contractHuntEnabled && myRole === 'seeker' && !isSpectator
       ? match?.contractTargets?.[currentPlayerId] ?? null
       : null;
   const myContractPlayer = myContractTargetId
@@ -3477,7 +3608,14 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
   const handleUseAbility = async (
     kind: 'decoy' | 'cloak' | 'sonar' | 'scan'
   ) => {
-    if (abilityBusy || !abilitiesEnabled || abilitiesRemaining <= 0) return;
+    if (
+      !canSpectatorPerformAction('ability', { isSpectator, sandboxUnlocked }) ||
+      abilityBusy ||
+      !abilitiesEnabled ||
+      abilitiesRemaining <= 0
+    ) {
+      return;
+    }
     if ((kind === 'decoy' || kind === 'sonar') && !myPos) {
       triggerAbilityToast('Esperando señal GPS para activar habilidad.');
       return;
@@ -3592,6 +3730,9 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
   }, [pocketCompassOn]);
 
   const handleTogglePocketCompass = async () => {
+    if (!canSpectatorPerformAction('compass', { isSpectator, sandboxUnlocked })) {
+      return;
+    }
     const next = !pocketCompassOn;
     if (next) {
       const DOE = window.DeviceOrientationEvent as unknown as {
@@ -3913,6 +4054,43 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
               >
                 Ver resultado
               </button>
+            </div>
+          ) : spectatorAntiCheatNotice ? (
+            <div
+              role="alert"
+              className="flex items-center gap-2 rounded-xl bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm"
+            >
+              <Shield className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              <span className="truncate">{spectatorAntiCheatNotice}</span>
+            </div>
+          ) : isActiveSpectator ? (
+            <div
+              role="status"
+              className="flex items-center justify-between gap-2 rounded-xl border border-slate-700 bg-slate-900/95 px-3 py-1.5 text-xs font-semibold text-white shadow-sm backdrop-blur-xs"
+            >
+              <span className="flex items-center gap-1.5 min-w-0 truncate">
+                <Eye className="h-3.5 w-3.5 shrink-0 text-amber-400" aria-hidden="true" />
+                <span className="truncate">
+                  {spectatorFollowId
+                    ? `Siguiendo a ${
+                        players.find((p) => p.id === spectatorFollowId)?.name || 'jugador'
+                      }`
+                    : 'Modo Espectador · Ves a todos · Prohibido hacer trampas'}
+                </span>
+              </span>
+              {spectatorFollowId ? (
+                <button
+                  type="button"
+                  onClick={() => setSpectatorFollowId(null)}
+                  className="shrink-0 rounded-md bg-white/15 px-1.5 py-0.5 text-[10px] font-semibold text-white hover:bg-white/25"
+                >
+                  Vista libre
+                </button>
+              ) : (
+                <span className="shrink-0 font-mono text-[10px] text-amber-300 uppercase">
+                  Chat aislado
+                </span>
+              )}
             </div>
           ) : !myCaughtRecord && isInStorm && stormOverflowMeters !== null ? (
             <div
@@ -4242,7 +4420,7 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
           <>
             {/* Esquina inferior izquierda: Habilidades, Captura y/o Joystick */}
             <div className="pointer-events-auto absolute left-3 bottom-3 sm:left-5 sm:bottom-4 z-20 flex flex-col items-start gap-2">
-              {myRole === 'seeker' && !allHidersCaught && (
+              {myRole === 'seeker' && !allHidersCaught && !isSpectator && (
                 <button
                   type="button"
                   onClick={() => {
@@ -4258,6 +4436,101 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
                   </span>
                 </button>
               )}
+
+              {isActiveSpectator && (() => {
+                const followedPlayer = spectatorFollowId
+                  ? players.find((p) => p.id === spectatorFollowId)
+                  : null;
+                const liveSpectateTargets = players.filter(
+                  (p) => !caughtMap[p.id] && Boolean(otherLocations[p.id])
+                );
+                return (
+                  <div className="relative flex flex-col items-start gap-1">
+                    {showSpectatorCamMenu && (
+                      <div className="w-40 max-h-40 overflow-y-auto rounded-xl border border-slate-200 bg-white/95 p-1 shadow-lg backdrop-blur-xs space-y-0.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSpectatorFollowId(null);
+                            setShowSpectatorCamMenu(false);
+                          }}
+                          className={`flex w-full items-center justify-between rounded-lg px-2 py-1 text-left text-[11px] font-semibold transition-colors ${
+                            !spectatorFollowId
+                              ? 'bg-slate-900 text-white'
+                              : 'text-slate-700 hover:bg-slate-100'
+                          }`}
+                        >
+                          <span>👁️ Vista libre</span>
+                        </button>
+                        {liveSpectateTargets.map((p) => {
+                          const pRole = match?.roles?.[p.id] ?? 'hider';
+                          const active = spectatorFollowId === p.id;
+                          const loc = otherLocations[p.id];
+                          return (
+                            <button
+                              key={p.id}
+                              type="button"
+                              onClick={() => {
+                                setSpectatorFollowId(p.id);
+                                setShowSpectatorCamMenu(false);
+                                if (loc && mapRef.current) {
+                                  mapRef.current.panTo([loc.lat, loc.lng], { animate: true });
+                                }
+                              }}
+                              className={`flex w-full items-center gap-1.5 rounded-lg px-2 py-1 text-left text-[11px] font-semibold transition-colors ${
+                                active
+                                  ? 'bg-amber-50 text-amber-950'
+                                  : 'text-slate-800 hover:bg-slate-100'
+                              }`}
+                            >
+                              <span
+                                className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                                  pRole === 'seeker' ? 'bg-rose-500' : 'bg-emerald-500'
+                                }`}
+                                aria-hidden="true"
+                              />
+                              <span className="shrink-0 text-xs leading-none">{p.emoji}</span>
+                              <span className="truncate">{p.name}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                    <div className="inline-flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => setShowSpectatorCamMenu((cur) => !cur)}
+                        className={`inline-flex h-7 items-center gap-1 rounded-lg border px-2 text-[11px] font-semibold shadow-sm backdrop-blur-xs transition-colors ${
+                          followedPlayer
+                            ? 'border-amber-300 bg-amber-50/95 text-amber-950'
+                            : 'border-slate-200/90 bg-white/95 text-slate-800 hover:bg-slate-50'
+                        }`}
+                      >
+                        <Eye className="h-3 w-3 shrink-0" aria-hidden="true" />
+                        <span className="max-w-[82px] truncate">
+                          {followedPlayer
+                            ? `${followedPlayer.emoji} ${followedPlayer.name}`
+                            : `Vista libre (${liveSpectateTargets.length})`}
+                        </span>
+                      </button>
+                      {followedPlayer && (
+                        <button
+                          type="button"
+                          title="Volver a vista libre"
+                          aria-label="Volver a vista libre"
+                          onClick={() => {
+                            setSpectatorFollowId(null);
+                            setShowSpectatorCamMenu(false);
+                          }}
+                          className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200/90 bg-white/95 text-[11px] font-bold text-slate-700 shadow-sm hover:bg-slate-100"
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
 
               {!matchWinner &&
                 isHuntPhase &&
@@ -4352,28 +4625,30 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
 
                   {/* Controles rápidos */}
                   <div className="space-y-1.5">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        void handleTogglePocketCompass();
-                        setShowMapTools(false);
-                      }}
-                      className={`flex w-full min-h-[38px] items-center justify-between rounded-xl border px-3 font-semibold transition-colors ${
-                        pocketCompassOn
-                          ? 'border-slate-900 bg-slate-900 text-white'
-                          : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
-                      }`}
-                    >
-                      <span className="flex items-center gap-2">
-                        <Navigation className="h-3.5 w-3.5" aria-hidden="true" />
-                        <span>Brújula y vibración</span>
-                      </span>
-                      <span className="text-[10px] opacity-80">
-                        {pocketCompassOn ? 'ON' : 'OFF'}
-                      </span>
-                    </button>
+                    {!isSpectator && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void handleTogglePocketCompass();
+                          setShowMapTools(false);
+                        }}
+                        className={`flex w-full min-h-[38px] items-center justify-between rounded-xl border px-3 font-semibold transition-colors ${
+                          pocketCompassOn
+                            ? 'border-slate-900 bg-slate-900 text-white'
+                            : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                        }`}
+                      >
+                        <span className="flex items-center gap-2">
+                          <Navigation className="h-3.5 w-3.5" aria-hidden="true" />
+                          <span>Brújula y vibración</span>
+                        </span>
+                        <span className="text-[10px] opacity-80">
+                          {pocketCompassOn ? 'ON' : 'OFF'}
+                        </span>
+                      </button>
+                    )}
 
-                    {allowTestJoystick && (
+                    {allowTestJoystick && (!isSpectator || sandboxUnlocked) && (
                       <button
                         type="button"
                         onClick={() => {
@@ -4515,7 +4790,7 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
                       )}
                       <p className="text-slate-500">
                         {[
-                          fogEnabled ? `🌫️ Niebla ${fogRadiusM}m` : null,
+                          fogEnabled ? `🌑 Apagón ${fogRadiusM}m` : null,
                           radarEnabled ? `📡 Radar ${radarIntervalSec}s` : null,
                           trailEnabled ? `👣 Rastro ${trailDurationSec}s` : null,
                           isMyStealthStill ? '🥷 Sigilo activo' : null,
@@ -4692,6 +4967,7 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
                                   loc.locationDisabled))))
                       );
                       const seekerCanCatchThis =
+                        !isSpectator &&
                         myRole === 'seeker' &&
                         !isSelf &&
                         pRole === 'hider' &&
@@ -4717,6 +4993,7 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
                                 name={p.name}
                                 eliminated={Boolean(caughtInfo)}
                                 avatarEffectId={pCosmetics?.avatarEffectId}
+                                platinumAvatar={pCosmetics?.platinumAvatar}
                               />
                               <div className="min-w-0">
                                 <PlayerCosmeticName
@@ -4734,7 +5011,18 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
                                   )}
                                   {isSelf && (
                                     <span className="font-medium text-emerald-700 mr-1.5">
-                                      Tú ({myRole === 'seeker' ? 'Buscador' : 'Fugitivo'})
+                                      Tú ({isSpectator ? 'Espectador' : myRole === 'seeker' ? 'Buscador' : 'Fugitivo'})
+                                    </span>
+                                  )}
+                                  {isSpectator && !isSelf && !caughtInfo && (
+                                    <span
+                                      className={`font-semibold mr-1.5 ${
+                                        pRole === 'seeker'
+                                          ? 'text-rose-600'
+                                          : 'text-emerald-700'
+                                      }`}
+                                    >
+                                      {pRole === 'seeker' ? 'Buscador' : 'Fugitivo'}
                                     </span>
                                   )}
                                   {caughtInfo && (
@@ -4775,6 +5063,23 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
                             </div>
 
                             <div className="flex items-center gap-2 shrink-0">
+                              {isActiveSpectator && !caughtInfo && loc && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setSpectatorFollowId(p.id);
+                                    setActiveTab('map');
+                                    mapRef.current?.panTo([loc.lat, loc.lng], {
+                                      animate: true,
+                                    });
+                                  }}
+                                  className="inline-flex min-h-[36px] items-center gap-1 rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-800 hover:bg-slate-50 whitespace-nowrap"
+                                >
+                                  <Eye className="h-3.5 w-3.5 text-amber-600" aria-hidden="true" />
+                                  <span>Seguir</span>
+                                </button>
+                              )}
+
                               {seekerCanCatchThis && (
                                 <button
                                   type="button"
@@ -4805,22 +5110,28 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
                                 </button>
                               )}
 
-                              {(caughtInfo || infectedInfo) && isHost && (
-                                <button
-                                  type="button"
-                                  onClick={() => handleUndo(p.id)}
-                                  disabled={busyCatchId === p.id}
-                                  title={
-                                    infectedInfo
-                                      ? 'Deshacer infección'
-                                      : 'Deshacer eliminación'
-                                  }
-                                  className="inline-flex min-h-[36px] items-center gap-1 rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-                                >
-                                  <RotateCcw className="h-3.5 w-3.5" />
-                                  <span>Deshacer</span>
-                                </button>
-                              )}
+                              {(caughtInfo || infectedInfo) &&
+                                isHost &&
+                                canSpectatorPerformAction('undo_elimination', {
+                                  isSpectator,
+                                  isSelf,
+                                  sandboxUnlocked,
+                                }) && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleUndo(p.id)}
+                                    disabled={busyCatchId === p.id}
+                                    title={
+                                      infectedInfo
+                                        ? 'Deshacer infección'
+                                        : 'Deshacer eliminación'
+                                    }
+                                    className="inline-flex min-h-[36px] items-center gap-1 rounded-xl border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                                  >
+                                    <RotateCcw className="h-3.5 w-3.5" />
+                                    <span>Deshacer</span>
+                                  </button>
+                                )}
                             </div>
                           </div>
 
@@ -4940,14 +5251,19 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
                       <div className="flex items-center justify-between gap-3 py-2">
                         <dt className="text-slate-500">Tu rol</dt>
                         <dd className="font-semibold text-slate-900 text-right">
-                          {myRole === 'seeker' ? 'Buscador' : 'Fugitivo'}
-                          {myCaughtRecord ? ' (Eliminado)' : ''}
+                          {isSpectator
+                            ? 'Espectador (Eliminado · Anti-trampas)'
+                            : myRole === 'seeker'
+                            ? 'Buscador'
+                            : 'Fugitivo'}
                         </dd>
                       </div>
                       <div className="flex items-center justify-between gap-3 py-2">
                         <dt className="text-slate-500">Señal GPS</dt>
                         <dd className="font-mono text-xs font-semibold text-slate-900 text-right">
-                          {joystickActive
+                          {isSpectator
+                            ? 'Oculta (Modo Espectador)'
+                            : joystickActive
                             ? 'Mando virtual'
                             : myPos
                             ? `Suavizado (±${Math.round(myPos.accuracy)}m${
@@ -4975,30 +5291,34 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
                         >
                           <MessageSquare className="h-4 w-4 shrink-0" />
                           <span>
-                            Abrir chat de sala
+                            {isSpectator
+                              ? 'Chat de espectadores'
+                              : 'Abrir chat de sala'}
                             {unreadChatCount > 0 ? ` (${unreadChatCount})` : ''}
                           </span>
                         </button>
                       )}
 
-                      <button
-                        type="button"
-                        onClick={() => void handleTogglePocketCompass()}
-                        className={`flex w-full min-h-[42px] items-center justify-center gap-2 rounded-xl border px-4 py-2 text-xs font-semibold transition-colors ${
-                          pocketCompassOn
-                            ? 'border-slate-900 bg-slate-900 text-white'
-                            : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
-                        }`}
-                      >
-                        <Navigation className="h-4 w-4 shrink-0" />
-                        <span>
-                          {pocketCompassOn
-                            ? 'Apagar brújula y vibración'
-                            : 'Activar brújula y distancia por vibración'}
-                        </span>
-                      </button>
+                      {!isSpectator && (
+                        <button
+                          type="button"
+                          onClick={() => void handleTogglePocketCompass()}
+                          className={`flex w-full min-h-[42px] items-center justify-center gap-2 rounded-xl border px-4 py-2 text-xs font-semibold transition-colors ${
+                            pocketCompassOn
+                              ? 'border-slate-900 bg-slate-900 text-white'
+                              : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                          }`}
+                        >
+                          <Navigation className="h-4 w-4 shrink-0" />
+                          <span>
+                            {pocketCompassOn
+                              ? 'Apagar brújula y vibración'
+                              : 'Activar brújula y distancia por vibración'}
+                          </span>
+                        </button>
+                      )}
 
-                      {allowTestJoystick && (
+                      {allowTestJoystick && (!isSpectator || sandboxUnlocked) && (
                         <button
                           type="button"
                           onClick={() => {
@@ -5021,6 +5341,7 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
                       )}
 
                       {hunterPhotoEnabled &&
+                        !isSpectator &&
                         (isHost || myRole === 'seeker') &&
                         isHuntPhase &&
                         !matchWinner &&
@@ -5870,6 +6191,8 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
           playerName={currentPlayer?.name || 'Jugador'}
           playerEmoji={currentPlayer?.emoji || '🦊'}
           myRole={myRole}
+          isSpectator={isSpectator}
+          matchEnded={Boolean(matchWinner)}
           sandboxUnlocked={sandboxUnlocked}
           onUnreadCountChange={setUnreadChatCount}
         />
@@ -5949,7 +6272,7 @@ export const MatchScreen: React.FC<MatchScreenProps> = ({
                           className="w-full max-h-52 rounded-xl object-cover border border-slate-200"
                         />
                       )}
-                      {sub?.status === 'accepted' && isPhotoChallengeActive && (
+                      {!isSpectator && sub?.status === 'accepted' && isPhotoChallengeActive && (
                         <button
                           type="button"
                           onClick={() =>

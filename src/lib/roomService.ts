@@ -25,6 +25,7 @@ import {
   isBotPlayerId,
   isForceLocalSandboxEnabled,
 } from './soloSandbox';
+import { createRandomBotCosmetics } from './cosmetics';
 
 function shouldUseRemoteDb(): boolean {
   return Boolean(isSupabaseConfigured && supabase && !isForceLocalSandboxEnabled());
@@ -1181,6 +1182,19 @@ export async function addBotsToLocalRoom(
   const bots = createBotPlayers(toAdd, current, roomId);
   const next = [...current, ...bots];
   store.players[roomId] = next;
+
+  const nextCosmetics = { ...(room.rules.playerCosmetics || {}) };
+  bots.forEach((bot) => {
+    nextCosmetics[bot.id] = createRandomBotCosmetics();
+  });
+  store.rooms[roomId] = {
+    ...room,
+    rules: {
+      ...room.rules,
+      playerCosmetics: nextCosmetics,
+    },
+  };
+
   writeLocalStore(store);
   broadcastLocalSync({ type: 'room_updated', roomId });
   return next;
@@ -1196,6 +1210,23 @@ export async function removeBotsFromLocalRoom(
   const current = store.players[roomId] || [];
   const next = current.filter((p) => !isBotPlayerId(p.id));
   store.players[roomId] = next;
+
+  if (room.rules.playerCosmetics) {
+    const cleanedCosmetics: typeof room.rules.playerCosmetics = {};
+    for (const [pid, cos] of Object.entries(room.rules.playerCosmetics)) {
+      if (!isBotPlayerId(pid)) {
+        cleanedCosmetics[pid] = cos;
+      }
+    }
+    store.rooms[roomId] = {
+      ...room,
+      rules: {
+        ...room.rules,
+        playerCosmetics: cleanedCosmetics,
+      },
+    };
+  }
+
   writeLocalStore(store);
   broadcastLocalSync({ type: 'room_updated', roomId });
   return next;

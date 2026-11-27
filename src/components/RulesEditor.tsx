@@ -910,11 +910,11 @@ export const RulesEditor: React.FC<RulesEditorProps> = ({
                 </ExtraRuleRow>
 
                 <ExtraRuleRow
-                  emoji="🌫️"
-                  title="Modo niebla"
-                  description="Oscurece el mapa: solo ves a otros si están muy cerca."
+                  emoji="🌑"
+                  title="Apagón total (Niebla)"
+                  description="Oscurece el mapa con un radio muy bajo: los jugadores solo se ven entre sí si están dentro del radio."
                   checked={Boolean(draft.modifiers.fogEnabled)}
-                  ariaLabel="Alternar modo niebla"
+                  ariaLabel="Alternar apagón total"
                   onToggle={() =>
                     setDraft((prev) => ({
                       ...prev,
@@ -927,10 +927,10 @@ export const RulesEditor: React.FC<RulesEditorProps> = ({
                 >
                   <UnboundedNumberField
                     id="mod-fog-radius"
-                    label="Distancia visible"
-                    value={draft.modifiers.fogRadiusM ?? 60}
+                    label="Radio de visibilidad"
+                    value={draft.modifiers.fogRadiusM ?? 25}
                     unit="m"
-                    step={10}
+                    step={5}
                     min={1}
                     recommendedValue={rec.fogRadiusM}
                     onChange={(m) =>

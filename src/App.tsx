@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Settings } from 'lucide-react';
 import { AchievementsModal } from './components/AchievementsModal';
+import { DebugUnlockModal } from './components/DebugUnlockModal';
 import { HomeScreen } from './components/HomeScreen';
 import { KickedOverlay } from './components/KickedOverlay';
 import { LobbyScreen } from './components/LobbyScreen';
@@ -58,6 +59,7 @@ import {
   loadPreferences,
   refreshPreferencesFromStorage,
   subscribePreferences,
+  syncDebugCosmeticsOnToggle,
   triggerHaptic,
 } from './lib/preferences';
 import { hydrateFromIndexedDbFallback } from './lib/safeStorage';
@@ -149,6 +151,7 @@ export default function App() {
   const [sandboxUnlocked, setSandboxUnlocked] = useState<boolean>(() =>
     isSecretSandboxUnlocked()
   );
+  const [showDebugModal, setShowDebugModal] = useState(false);
 
   const logoTapRef = useRef<{ count: number; lastMs: number }>({
     count: 0,
@@ -257,6 +260,11 @@ export default function App() {
     let cancelled = false;
     void hydrateFromIndexedDbFallback().then((restoredKeys) => {
       if (cancelled || restoredKeys.length === 0) return;
+      if (restoredKeys.includes('baliza_secret_sandbox_v1')) {
+        const restoredDebug = isSecretSandboxUnlocked();
+        setSandboxUnlocked(restoredDebug);
+        syncDebugCosmeticsOnToggle(restoredDebug);
+      }
       if (restoredKeys.includes('baliza_app_preferences_v1')) {
         refreshPreferencesFromStorage();
       }
@@ -689,7 +697,10 @@ export default function App() {
   }, [room?.id, isMatchActive, lobbyCountdown?.startedAt, lobbyCountdown?.durationSec, clockOffsetMs]);
 
   useEffect(() => {
-    return subscribeSecretSandbox(setSandboxUnlocked);
+    return subscribeSecretSandbox((unlocked) => {
+      syncDebugCosmeticsOnToggle(unlocked);
+      setSandboxUnlocked(unlocked);
+    });
   }, []);
 
   useEffect(() => {
@@ -699,15 +710,9 @@ export default function App() {
         (e.altKey && e.key.toLowerCase() === 't');
       if (!isCombo) return;
       e.preventDefault();
-      const next = !isSecretSandboxUnlocked();
-      setSecretSandboxUnlocked(next);
-      if (next) {
-        unlockRetroAudio();
-        playSecretUnlockChime();
-        setGlobalNotice('🧪 Modo Test Secreto activado (Solo · Sin DB).');
-      } else {
-        setGlobalNotice(null);
-      }
+      unlockRetroAudio();
+      playPixelUiClick('toggle');
+      setShowDebugModal(true);
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
@@ -1600,6 +1605,10 @@ export default function App() {
     try {
       const nextPlayers = await addBotsToLocalRoom(room.id, count);
       setPlayers(nextPlayers);
+      const latest = await fetchRoomState(room.id);
+      if (latest?.room) {
+        setRoom(latest.room);
+      }
     } catch (err) {
       setGlobalNotice(
         err instanceof Error ? err.message : 'No se pudieron añadir bots.'
@@ -1612,6 +1621,10 @@ export default function App() {
     try {
       const nextPlayers = await removeBotsFromLocalRoom(room.id);
       setPlayers(nextPlayers);
+      const latest = await fetchRoomState(room.id);
+      if (latest?.room) {
+        setRoom(latest.room);
+      }
     } catch (err) {
       setGlobalNotice(
         err instanceof Error ? err.message : 'No se pudieron quitar los bots.'
@@ -1770,6 +1783,7 @@ export default function App() {
       setPlayerId(player.id);
 
       const allPlayers = await addBotsToLocalRoom(createdRoom.id, 3);
+      const afterBots = await fetchRoomState(createdRoom.id);
       const firstBot = allPlayers.find((p) => p.id !== player.id);
 
       const roles: Record<string, PlayerRole> = {};
@@ -1787,6 +1801,8 @@ export default function App() {
 
       const launchedRules: RoomRules = {
         ...sandboxRules,
+        playerCosmetics:
+          afterBots?.room.rules.playerCosmetics ?? sandboxRules.playerCosmetics,
         manualRoles: roles,
         matchState: {
           active: true,
@@ -2034,15 +2050,9 @@ export default function App() {
 
     if (logoTapRef.current.count >= 5) {
       logoTapRef.current.count = 0;
-      const next = !isSecretSandboxUnlocked();
-      setSecretSandboxUnlocked(next);
-      if (next) {
-        unlockRetroAudio();
-        playSecretUnlockChime();
-        setGlobalNotice('🧪 Modo Test Secreto activado (Solo · Sin DB).');
-      } else {
-        setGlobalNotice(null);
-      }
+      unlockRetroAudio();
+      playPixelUiClick('toggle');
+      setShowDebugModal(true);
       return;
     }
 
@@ -2227,6 +2237,26 @@ export default function App() {
       )}
       {showAchievements && (
         <AchievementsModal onClose={() => setShowAchievements(false)} />
+      )}
+      {showDebugModal && (
+        <DebugUnlockModal
+          isCurrentlyUnlocked={sandboxUnlocked}
+          onConfirmActivate={() => {
+            setSecretSandboxUnlocked(true);
+            syncDebugCosmeticsOnToggle(true);
+            unlockRetroAudio();
+            playSecretUnlockChime();
+            setGlobalNotice('🧪 Modo Debug activado (Solo · Sin DB · Cosméticos guardados).');
+            setShowDebugModal(false);
+          }}
+          onConfirmDeactivate={() => {
+            setSecretSandboxUnlocked(false);
+            syncDebugCosmeticsOnToggle(false);
+            setGlobalNotice(null);
+            setShowDebugModal(false);
+          }}
+          onClose={() => setShowDebugModal(false)}
+        />
       )}
     </div>
   );

@@ -573,6 +573,10 @@ export const EliminationOverlay: React.FC<EliminationOverlayProps> = ({
           </button>
         )}
 
+        <p className="text-center font-mono text-[11px] text-zinc-400">
+          Modo Espectador: verás a todos en el mapa. No hagas trampas ni reveles posiciones.
+        </p>
+
         <button
           type="button"
           onClick={onClose}

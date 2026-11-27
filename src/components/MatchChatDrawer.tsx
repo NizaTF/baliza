@@ -13,6 +13,11 @@ import {
 import { triggerHaptic } from '../lib/preferences';
 import { playPixelUiClick } from '../lib/retroAudio';
 import { isForceLocalSandboxEnabled } from '../lib/soloSandbox';
+import {
+  canReadChatMessage,
+  getSpectatorChatRules,
+  resolveOutgoingChatChannel,
+} from '../lib/spectator';
 import { PlayerRole } from '../types/game';
 
 interface MatchChatDrawerProps {
@@ -24,6 +29,8 @@ interface MatchChatDrawerProps {
   playerName: string;
   playerEmoji: string;
   myRole: PlayerRole;
+  isSpectator?: boolean;
+  matchEnded?: boolean;
   sandboxUnlocked?: boolean;
   onUnreadCountChange?: (count: number) => void;
 }
@@ -42,6 +49,13 @@ const QUICK_PHRASES_SEEKER = [
   '¡Voy tras mi objetivo!',
 ];
 
+const QUICK_PHRASES_SPECTATOR = [
+  '¡Menuda persecución!',
+  '¡Qué cerca ha pasado!',
+  'Buena jugada',
+  'Viendo la partida desde fuera',
+];
+
 export const MatchChatDrawer: React.FC<MatchChatDrawerProps> = ({
   isOpen,
   onClose,
@@ -51,12 +65,18 @@ export const MatchChatDrawer: React.FC<MatchChatDrawerProps> = ({
   playerName,
   playerEmoji,
   myRole,
+  isSpectator = false,
+  matchEnded = false,
   sandboxUnlocked = false,
   onUnreadCountChange,
 }) => {
+  const chatRules = useMemo(
+    () => getSpectatorChatRules({ isSpectator, matchEnded, myRole }),
+    [isSpectator, matchEnded, myRole]
+  );
   const [authUser, setAuthUser] = useState<User | null>(null);
   const [messages, setMessages] = useState<RoomChatMessage[]>([]);
-  const [channel, setChannel] = useState<ChatChannel>('all');
+  const [channel, setChannel] = useState<ChatChannel>(chatRules.defaultChannel);
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [signingIn, setSigningIn] = useState(false);
@@ -93,11 +113,19 @@ export const MatchChatDrawer: React.FC<MatchChatDrawerProps> = ({
     return unsub;
   }, [roomId, authUser?.uid, isSandboxLocal]);
 
+  useEffect(() => {
+    if (chatRules.lockedToSpectatorsOnly) {
+      setChannel('spectators');
+    } else if (channel === 'spectators') {
+      setChannel('all');
+    }
+  }, [chatRules.lockedToSpectatorsOnly, channel]);
+
   const visibleMessages = useMemo(() => {
-    return messages.filter(
-      (msg) => msg.channel === 'all' || msg.senderRole === myRole
+    return messages.filter((msg) =>
+      canReadChatMessage(msg, { isSpectator, matchEnded, myRole })
     );
-  }, [messages, myRole]);
+  }, [messages, isSpectator, matchEnded, myRole]);
 
   useEffect(() => {
     if (isOpen) {
@@ -131,6 +159,10 @@ export const MatchChatDrawer: React.FC<MatchChatDrawerProps> = ({
     setSending(true);
     setChatError(null);
     try {
+      const effectiveChannel = resolveOutgoingChatChannel(channel, {
+        isSpectator,
+        matchEnded,
+      });
       await sendRoomChatMessage({
         roomId,
         roomCode,
@@ -138,7 +170,7 @@ export const MatchChatDrawer: React.FC<MatchChatDrawerProps> = ({
         senderName: playerName,
         senderEmoji: playerEmoji,
         senderRole: myRole,
-        channel,
+        channel: effectiveChannel,
         text: trimmed,
         forceLocal: isSandboxLocal,
       });
@@ -157,8 +189,11 @@ export const MatchChatDrawer: React.FC<MatchChatDrawerProps> = ({
   if (!isOpen) return null;
 
   const canWrite = isSandboxLocal || Boolean(authUser);
-  const quickPhrases =
-    myRole === 'seeker' ? QUICK_PHRASES_SEEKER : QUICK_PHRASES_HIDER;
+  const quickPhrases = chatRules.lockedToSpectatorsOnly
+    ? QUICK_PHRASES_SPECTATOR
+    : myRole === 'seeker'
+    ? QUICK_PHRASES_SEEKER
+    : QUICK_PHRASES_HIDER;
 
   return (
     <div
@@ -195,39 +230,51 @@ export const MatchChatDrawer: React.FC<MatchChatDrawerProps> = ({
           </button>
         </div>
 
-        {/* Selector de canal */}
+        {/* Selector de canal o aislamiento anti-trampas para espectadores */}
         <div className="border-b border-slate-100 px-4 py-2 shrink-0">
-          <div className="grid grid-cols-2 gap-1 rounded-xl bg-slate-100 p-1">
-            <button
-              type="button"
-              onClick={() => setChannel('all')}
-              className={`min-h-[34px] rounded-lg px-2 text-xs font-semibold transition-colors ${
-                channel === 'all'
-                  ? 'bg-white text-slate-900 shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Todos
-            </button>
-            <button
-              type="button"
-              onClick={() => setChannel('team')}
-              className={`inline-flex min-h-[34px] items-center justify-center gap-1 rounded-lg px-2 text-xs font-semibold transition-colors ${
-                channel === 'team'
-                  ? 'bg-white text-slate-900 shadow-xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              {myRole === 'seeker' ? (
-                <Eye className="h-3.5 w-3.5 text-rose-600" aria-hidden="true" />
-              ) : (
-                <Shield className="h-3.5 w-3.5 text-emerald-600" aria-hidden="true" />
-              )}
-              <span>
-                Solo {myRole === 'seeker' ? 'Buscadores' : 'Fugitivos'}
+          {chatRules.lockedToSpectatorsOnly ? (
+            <div className="flex items-center justify-between gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] font-semibold text-amber-950">
+              <span className="flex items-center gap-1.5">
+                <Shield className="h-3.5 w-3.5 text-amber-700 shrink-0" aria-hidden="true" />
+                <span>Solo Espectadores · Anti-trampas</span>
               </span>
-            </button>
-          </div>
+              <span className="text-[10px] font-medium text-amber-800">
+                Los vivos no leen este chat
+              </span>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-1 rounded-xl bg-slate-100 p-1">
+              <button
+                type="button"
+                onClick={() => setChannel('all')}
+                className={`min-h-[34px] rounded-lg px-2 text-xs font-semibold transition-colors ${
+                  channel === 'all'
+                    ? 'bg-white text-slate-900 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Todos
+              </button>
+              <button
+                type="button"
+                onClick={() => setChannel('team')}
+                className={`inline-flex min-h-[34px] items-center justify-center gap-1 rounded-lg px-2 text-xs font-semibold transition-colors ${
+                  channel === 'team'
+                    ? 'bg-white text-slate-900 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                {myRole === 'seeker' ? (
+                  <Eye className="h-3.5 w-3.5 text-rose-600" aria-hidden="true" />
+                ) : (
+                  <Shield className="h-3.5 w-3.5 text-emerald-600" aria-hidden="true" />
+                )}
+                <span>
+                  Solo {myRole === 'seeker' ? 'Buscadores' : 'Fugitivos'}
+                </span>
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Cuerpo de mensajes */}
@@ -293,12 +340,22 @@ export const MatchChatDrawer: React.FC<MatchChatDrawerProps> = ({
                       <span>{msg.senderName}</span>
                       <span aria-hidden="true">·</span>
                       <span>
-                        {msg.senderRole === 'seeker' ? 'Buscador' : 'Fugitivo'}
+                        {msg.channel === 'spectators'
+                          ? 'Espectador'
+                          : msg.senderRole === 'seeker'
+                          ? 'Buscador'
+                          : 'Fugitivo'}
                       </span>
                       {msg.channel === 'team' && (
                         <>
                           <span aria-hidden="true">·</span>
                           <span>Equipo</span>
+                        </>
+                      )}
+                      {msg.channel === 'spectators' && (
+                        <>
+                          <span aria-hidden="true">·</span>
+                          <span>Sala muerta</span>
                         </>
                       )}
                       <span aria-hidden="true">·</span>
@@ -348,9 +405,11 @@ export const MatchChatDrawer: React.FC<MatchChatDrawerProps> = ({
                 value={text}
                 maxLength={CHAT_TEXT_MAX_LENGTH}
                 placeholder={
-                  channel === 'team'
-                    ? `Mensaje privado a tu bando...`
-                    : `Mensaje corto para la sala...`
+                  chatRules.lockedToSpectatorsOnly
+                    ? 'Habla solo con otros espectadores...'
+                    : channel === 'team'
+                    ? 'Mensaje privado a tu bando...'
+                    : 'Mensaje corto para la sala...'
                 }
                 onChange={(e) => setText(e.target.value)}
                 className="h-11 flex-1 rounded-xl border border-slate-300 bg-white px-3.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-slate-900 focus:outline-none"

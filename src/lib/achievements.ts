@@ -361,7 +361,7 @@ export const ACHIEVEMENT_CATALOG: AchievementDef[] = [
     id: 'platinum_master',
     category: 'career',
     title: '100 % Platino: Señor de la Baliza',
-    description: 'Desbloquea los otros 19 logros tryhard del juego.',
+    description: 'Desbloquea los otros 19 logros tryhard y consigue texto e icono 100 % personalizables.',
     icon: '🏆',
     target: 19,
     getValue: (_s, unlockedAt) =>

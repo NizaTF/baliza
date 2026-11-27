@@ -13,6 +13,8 @@ const PERSISTED_KEYS = new Set<string>([
   'escondite_urbano_profile',
   'escondite_urbano_player_id',
   'escondite_urbano_active_session',
+  'baliza_secret_sandbox_v1',
+  'baliza_force_local_db_v1',
 ]);
 
 function isPersistedKey(key: string): boolean {

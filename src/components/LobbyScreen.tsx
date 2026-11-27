@@ -346,6 +346,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
                         size="sm"
                         name={player.name}
                         avatarEffectId={pCosmetics?.avatarEffectId}
+                        platinumAvatar={pCosmetics?.platinumAvatar}
                       />
                       <div className="min-w-0">
                         <PlayerCosmeticName

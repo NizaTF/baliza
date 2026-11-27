@@ -1016,6 +1016,7 @@ export const MatchResultOverlay: React.FC<MatchResultOverlayProps> = ({
                               name={p.name}
                               eliminated={Boolean(caught)}
                               avatarEffectId={pCosmetics?.avatarEffectId}
+                              platinumAvatar={pCosmetics?.platinumAvatar}
                             />
                             <PlayerCosmeticName
                               name={p.name}
@@ -1088,6 +1089,7 @@ export const MatchResultOverlay: React.FC<MatchResultOverlayProps> = ({
                               name={p.name}
                               eliminated={Boolean(seekerCaught)}
                               avatarEffectId={pCosmetics?.avatarEffectId}
+                              platinumAvatar={pCosmetics?.platinumAvatar}
                             />
                             <div className="min-w-0">
                               <PlayerCosmeticName

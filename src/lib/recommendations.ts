@@ -65,7 +65,7 @@ export function getRecommendedSettings(rawPlayerCount: number): RecommendedSetti
     beaconRadiusM: n <= 5 ? 20 : n <= 10 ? 25 : 35,
     hunterPhotoWindowSec: n <= 5 ? 45 : n <= 10 ? 60 : 90,
     hunterPhotoDelaySec: n <= 5 ? 15 : 25,
-    fogRadiusM: n <= 4 ? 50 : n <= 9 ? 65 : 90,
+    fogRadiusM: n <= 4 ? 20 : n <= 9 ? 25 : 35,
     radarIntervalSec: n <= 4 ? 15 : n <= 9 ? 20 : 25,
     radarRangeM: n <= 4 ? 220 : n <= 9 ? 320 : 450,
     trailDurationSec: n <= 4 ? 60 : n <= 9 ? 90 : 120,
